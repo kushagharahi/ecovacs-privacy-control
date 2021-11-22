@@ -5,7 +5,7 @@ Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local
 
 # Technicials
 
-Once setup, MQTT based Ecovacs robot vaccums directly connect to `mq-ww.ecouser.net`:8883 MQTT server. With a proper DNS setup and a self signed cert, users can redirect bot MQTT traffic to a self-hosted MQTT server
+Once setup, MQTT based Ecovacs robot vaccums directly connect to `mq-ww.ecouser.net`:8883 MQTT server. With a proper DNS setup and a self signed cert for `ecouser.net`, users can redirect bot MQTT traffic to a self-hosted MQTT server
 
 # Limitations
 
