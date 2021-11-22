@@ -9,4 +9,4 @@ Once setup, MQTT based Ecovacs robot vaccums directly connect to `mq-ww.ecouser.
 
 # Limitations
 
-WIFI credentials must be setup on the robot with the Ecovacs app. Reverse engineering is required here.
+WIFI credentials must be setup on the robot with the Ecovacs app. Reverse engineering is required here. To avoid data leakage, internet data can be disabled while setting up bot.
