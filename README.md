@@ -1,5 +1,5 @@
 # ecovacs-privacy-control
-Privacy first API control for Ecovacs MQTT based vaccums
+Privacy first API control for Ecovacs MQTT based vaccums -- tested with Ecovacs Deebot 900/901 series _only_
 
 Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local API.
 
