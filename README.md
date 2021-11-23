@@ -1,7 +1,21 @@
 # ecovacs-privacy-control
 Privacy first API control for Ecovacs MQTT based vaccums
 
-Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local API. 
+Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local API.
+
+# Usage
+
+- Setup WIFI credentials on robot with Ecovacs app
+- Build/Run Docker container
+- Point DNS for `ecouser.net` to server running container
+- Restart robot
+
+If the bot is successful in connecting, you should see something like this in the logs:
+
+```
+1637629641: New connection from <snip> on port 8883.
+1637629641: New client connected from <snip> as <snip>-<snip>-<snip>-<snip>-<snip>@ls1ok3/<snip> (p2, c1, k120, u'<snip>').
+```
 
 # Technicials
 

@@ -1,5 +1,4 @@
-# We can really use the root CA as the server cert, but should we do that? This is more educational :-)
-FROM alpine:3.15 as cert generation
+FROM alpine:3.15 as cert-generation
 
 # install openssl
 RUN apk update && \
@@ -32,3 +31,11 @@ RUN openssl req -new -nodes -key server.key -config csrconfig_server.txt -out se
 RUN openssl x509 -req -in server.csr -days 365 -CA ca.crt -CAkey ca.key \
     -extfile certconfig_server.txt -extensions req_ext -CAcreateserial -out server.crt
 
+FROM eclipse-mosquitto:2.0
+
+COPY --from=cert-generation /ca.crt /mosquitto/config/
+COPY --from=cert-generation /server.crt /mosquitto/config/
+COPY --from=cert-generation /server.key /mosquitto/config/
+COPY mosquitto.conf /mosquitto/config/
+
+EXPOSE 8883
