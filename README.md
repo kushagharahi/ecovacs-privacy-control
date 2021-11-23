@@ -17,6 +17,13 @@ If the bot is successful in connecting, you should see something like this in th
 1637629641: New client connected from <snip> as <snip>-<snip>-<snip>-<snip>-<snip>@ls1ok3/<snip> (p2, c1, k120, u'<snip>').
 ```
 
+## TODO:
+
+- Create MQTT Broker with TLS config needed for bot to connect to local server ✅
+- Document MQTT message schema/contents for sending bot commands
+- Document MQTT message schema/content for receiving bot info
+- Create local API to send/read MQTT messages
+
 ## Technicials
 
 Once setup, MQTT based Ecovacs robot vaccums directly connect to `mq-ww.ecouser.net`:8883 MQTT server. With a proper DNS setup and a self signed cert for `ecouser.net`, users can redirect bot MQTT traffic to a self-hosted MQTT server
