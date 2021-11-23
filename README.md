@@ -30,6 +30,11 @@ Once setup, MQTT based Ecovacs robot vaccums directly connect to `mq-ww.ecouser.
 
 ecovacs-privacy-control is a docker container that generates self-signed certificates for `ecouser.net` and launches Mosquitto (MQTT broker)
 
+
+### MQTT Topics
+
+
+
 ## Limitations
 
 WIFI credentials must be setup on the robot with the Ecovacs app. Reverse engineering is required here. To avoid data leakage, internet data can be disabled while setting up bot.
