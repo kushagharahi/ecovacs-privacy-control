@@ -6,7 +6,7 @@ Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local
 ## Usage
 
 - Setup WIFI credentials on robot with Ecovacs app
-- Build/Run Docker container
+- Build/Run Docker container - Must expose container port 8883
 - Point DNS for `ecouser.net` to server running container
 - Restart robot -- Robot caches DNS response and to get a refreshed DNS you must restart
 
