@@ -22,7 +22,7 @@ If the bot is successful in connecting, you should see something like this in th
 - Create MQTT Broker with TLS config needed for bot to connect to local server ✅
 - Document MQTT message schema/contents for sending bot commands ⚠ (WIP)
 - Document MQTT message schema/content for receiving bot info ⚠ (WIP)
-- Create local API to send/read MQTT messages ❌ (not started)
+- Create local API to send/read MQTT messages ⚠ (WIP)
 
 ## Technicials
 

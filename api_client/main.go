@@ -1,7 +1,7 @@
 package main
 
 import (
-	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -10,47 +10,43 @@ import (
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
-var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
-	fmt.Printf("Received message: %s from topic: %s\n", msg.Payload(), msg.Topic())
+var bot_serial string = "b11fceaf-5173-4190-be6e-9c37ef3dc238"
+var device_type string = "ls1ok3"
+var resource string = "zwzq"
+
+var client mqtt.Client
+
+func publishJson(msg Msg) {
+	topic := fmt.Sprintf("iot/p2p/%s/x/x/x/%s/%s/%s/p/x/j", msg.cmdName, bot_serial, device_type, resource)
+	jsonPayload, _ := json.Marshal(msg.cmdOpts)
+	jsonString := string(jsonPayload)
+	pub(client, topic, jsonString)
 }
 
-func sub(client mqtt.Client) {
-	topic := "iot/atr/#"
-	token := client.Subscribe(topic, 0, messagePubHandler)
-	token.Wait()
-	fmt.Printf("Subscribed to topic %s", topic)
+func publishXML(msg XMLMsg) {
+	topic := fmt.Sprintf("iot/p2p/%s/x/x/x/%s/%s/%s/q/x/x", msg.cmdName, bot_serial, device_type, resource)
+	xmlPayload, _ := msg.cmdOpts.XmlIndent("", " ", "ctl")
+	xmlString := string(xmlPayload)
+	pub(client, topic, xmlString)
 }
 
-var connectHandler mqtt.OnConnectHandler = func(client mqtt.Client) {
-	fmt.Println("Connected")
-	sub(client)
-}
-
-var connectLostHandler mqtt.ConnectionLostHandler = func(client mqtt.Client, err error) {
-	fmt.Printf("Connect lost: %v", err)
+func subscribe() {
+	sub(client, "iot/atr/#")
+	sub(client, fmt.Sprintf("iot/p2p/+/%s/%s/%s/#", bot_serial, device_type, resource))
 }
 
 func main() {
 	keepAlive := make(chan os.Signal)
 	signal.Notify(keepAlive, os.Interrupt, syscall.SIGTERM)
 
-	// All your code
-
-	var broker = "mq-ww.ecouser.net"
-	var port = 8883
-	opts := mqtt.NewClientOptions()
-	opts.AddBroker(fmt.Sprintf("mqtts://%s:%d", broker, port))
-	opts.SetTLSConfig(&tls.Config{InsecureSkipVerify: true})
-	opts.SetClientID("communication_server")
-	opts.SetUsername("server")
-	opts.SetDefaultPublishHandler(messagePubHandler)
-	opts.OnConnect = connectHandler
-	opts.OnConnectionLost = connectLostHandler
-
-	client := mqtt.NewClient(opts)
-	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		panic(token.Error())
-	}
-	opts.SetConnectRetry(true)
+	client = connect()
+	subscribe()
+	publishJson(GetWkVer)
+	publishXML(GetBrushLifeSpan)
+	publishXML(PullM)
+	publishXML(PullM1)
+	publishXML(PullM2)
+	publishXML(PullM3)
+	publishXML(PullM4)
 	<-keepAlive
 }
