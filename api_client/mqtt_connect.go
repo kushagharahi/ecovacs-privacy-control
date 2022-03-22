@@ -3,12 +3,17 @@ package main
 import (
 	"crypto/tls"
 	"fmt"
+	"strings"
 
+	"github.com/clbanning/mxj/v2"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
 var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Message) {
 	fmt.Printf("Received message: %s from topic: %s\n", msg.Payload(), msg.Topic())
+	msgValues, _ := mxj.NewMapXml(msg.Payload())
+	cmdName := strings.Split(msg.Topic(), "/")[2]
+	handleResponse(cmdName, msgValues)
 }
 
 func sub(client mqtt.Client, topic string) {

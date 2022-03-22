@@ -27,6 +27,7 @@ var PullM XMLMsg = XMLMsg{
 	cmdOpts: mxj.Map{"-tp": "sa", "-msid": "0", "-mid": "0"},
 }
 
+//Request Spot Areas from robot
 var GetMapSet XMLMsg = XMLMsg{
 	cmdName: "GetMapSet",
 	cmdOpts: mxj.Map{"-tp": "sa"},
@@ -39,7 +40,7 @@ var GetMapM XMLMsg = XMLMsg{
 
 var PullMp XMLMsg = XMLMsg{
 	cmdName: "PullMp",
-	cmdOpts: mxj.Map{"-pid": "0"},
+	cmdOpts: mxj.Map{"-pid": "1295764014"},
 }
 
 type Sound string
