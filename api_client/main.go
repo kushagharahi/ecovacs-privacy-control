@@ -44,9 +44,8 @@ func main() {
 	publishJson(GetWkVer)
 	publishXML(GetBrushLifeSpan)
 	publishXML(PullM)
-	publishXML(PullM1)
-	publishXML(PullM2)
-	publishXML(PullM3)
-	publishXML(PullM4)
+	publishXML(GetMapSet)
+	publishXML(GetMapM)
+	publishXML(PullMp)
 	<-keepAlive
 }
