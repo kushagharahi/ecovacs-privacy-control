@@ -32,6 +32,7 @@ type MapInfo struct {
 	pixelWidth     int
 	rowGrid        int
 	rowPiece       int
+	buffer         [][]byte
 }
 
 func getMapDataValues(msgValues *mxj.Map) (*MapInfo, error) {
@@ -48,13 +49,20 @@ func getMapDataValues(msgValues *mxj.Map) (*MapInfo, error) {
 	mapInfo.columnPiece, _ = strconv.Atoi(valuesMap["-c"].(string))
 	mapInfo.rowPiece, _ = strconv.Atoi(valuesMap["-r"].(string))
 	mapInfo.pixelWidth, _ = strconv.Atoi(valuesMap["-p"].(string))
-	mapInfo.crc, _ = sliceAtoi(strings.Split(valuesMap["-m"].(string), ","))
+	mapInfo.crc, _ = sliceInt64(strings.Split(valuesMap["-m"].(string), ","))
 	// TODO: BOX
+
+	// zeroCrc := crc32.ChecksumIEEE(make([]byte, (mapInfo.rowGrid * mapInfo.columnGrid)))
+	// for i := 0; i < len(mapInfo.crc); i++ {
+	// 	if mapInfo.crc[i] == int64(zeroCrc) {
+	// 		for p := 0; p < len
+	// 	}
+	// }
 
 	return &mapInfo, nil
 }
 
-func sliceAtoi(sa []string) ([]int64, error) {
+func sliceInt64(sa []string) ([]int64, error) {
 	si := make([]int64, 0, len(sa))
 	for _, a := range sa {
 		i, err := strconv.ParseInt(a, 10, 64)
