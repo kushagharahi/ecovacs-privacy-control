@@ -38,10 +38,17 @@ var GetMapM XMLMsg = XMLMsg{
 	cmdOpts: mxj.Map{},
 }
 
-var PullMp XMLMsg = XMLMsg{
-	cmdName: "PullMP",
-	cmdOpts: mxj.Map{"-pid": "1"},
+func PullMp(pieceId int) XMLMsg {
+	return XMLMsg{
+		cmdName: "PullMP",
+		cmdOpts: mxj.Map{"-pid": pieceId},
+	}
 }
+
+// var PullMp XMLMsg = XMLMsg{
+// 	cmdName: "PullMP",
+// 	cmdOpts: mxj.Map{"-pid": "1"},
+// }
 
 type Sound string
 

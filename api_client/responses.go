@@ -59,6 +59,12 @@ func getMapDataValues(msgValues *mxj.Map) (*MapInfo, error) {
 	// 	}
 	// }
 
+	numMapPieces := mapInfo.columnPiece * mapInfo.rowPiece
+
+	for i := 0; i < numMapPieces; i++ {
+		publishXML(PullMp(i))
+	}
+
 	return &mapInfo, nil
 }
 
