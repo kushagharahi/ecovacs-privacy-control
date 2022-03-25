@@ -68,13 +68,6 @@ func getMapDataValues(valuesMap map[string]interface{}) (*MapInfo, error) {
 	mapInfo.crc, _ = sliceInt64(strings.Split(valuesMap["-m"].(string), ","))
 	// TODO: BOX
 
-	// zeroCrc := crc32.ChecksumIEEE(make([]byte, (mapInfo.rowGrid * mapInfo.columnGrid)))
-	// for i := 0; i < len(mapInfo.crc); i++ {
-	// 	if mapInfo.crc[i] == int64(zeroCrc) {
-	// 		for p := 0; p < len
-	// 	}
-	// }
-
 	numMapPieces := mapInfo.columnPiece * mapInfo.rowPiece
 
 	for i := 0; i < numMapPieces; i++ {
