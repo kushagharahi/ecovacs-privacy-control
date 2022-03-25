@@ -3,13 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
-	"encoding/binary"
 	"fmt"
 	"strconv"
 	"strings"
 
 	mxj "github.com/clbanning/mxj/v2"
-	"github.com/ulikunitz/xz"
+	"github.com/kjk/lzma"
 )
 
 func handleResponse(cmdName string, msgValues mxj.Map) {
@@ -87,9 +86,9 @@ func getMapDataValues(valuesMap map[string]interface{}) (*MapInfo, error) {
 
 func updateMapBuffer(valuesMap map[string]interface{}) {
 	if base64EncodedString, ok := valuesMap["-p"].(string); ok {
-		fmt.Println(base64EncodedString)
 		//lzma is 7z compression
-		lmzaCompressedByteArr, err := base64.StdEncoding.DecodeString(base64EncodedString)
+		lmzaCompressedMapPieceByteArr, err := base64.StdEncoding.DecodeString(base64EncodedString)
+
 		if err != nil {
 			//TODO bubble up errors
 			err = fmt.Errorf("Could not decode map piece from base64 %w", err)
@@ -97,57 +96,28 @@ func updateMapBuffer(valuesMap map[string]interface{}) {
 			return
 		}
 
-		lzmaCompressedByteBuffer := bytes.NewBuffer(lmzaCompressedByteArr)
+		if base64EncodedString != "XQAABAAQJwAAAABv/f//o7f/Rz5IFXI5YVG4kijmo4YH+e7kHoLTL8U6PAFLsX7Jhrz0KgA=" {
+			//insert missing 4 bytes at index 8
+			lmzaCompressedMapPieceByteArr = append(lmzaCompressedMapPieceByteArr[:12], lmzaCompressedMapPieceByteArr[8:]...)
+			lmzaCompressedBuffer := bytes.NewBuffer(lmzaCompressedMapPieceByteArr)
 
-		//read first 5 bytes of lmzaCompressedByteArr
-		//this will equal [93 0 0 4]
-		//TODO Check these? App checks them.
-		lzmaDecoderProperties := make([]byte, 5)
-		lzmaCompressedByteBuffer.Read(lzmaDecoderProperties)
-		fmt.Println(lzmaDecoderProperties)
+			decodedMapPieceByteArr := make([]byte, 10000)
+			lzmaReadCloser := lzma.NewReader(lmzaCompressedBuffer)
 
-		//read next four bytes; should represent an integer value to define the amount of bits used to represent the map data. It should be the same value as the amount determined by MapInfo.rowGrid * MapInfo.columnGrid
-		//TODO: Check assumption
-		numDataBitsByteArr := make([]byte, 4)
-		lzmaCompressedByteBuffer.Read(numDataBitsByteArr)
-		fmt.Println(numDataBitsByteArr)
-		numDataBitsInt := int(binary.LittleEndian.Uint32(numDataBitsByteArr))
-		fmt.Println(numDataBitsInt)
+			lzmaReadCloser.Read(decodedMapPieceByteArr)
 
-		if err != nil {
-			//TODO Bubble up errors
-			err = fmt.Errorf("Error decoding number of data bits from []byte to int %w", err)
-			fmt.Println(err)
-			return
+			if err != nil {
+				//TODO Bubble up errors
+				err = fmt.Errorf("Error decoding lzma encoded map piece %w", err)
+				fmt.Println(err)
+				return
+			}
+
+			fmt.Println()
+			fmt.Println(decodedMapPieceByteArr)
 		}
-
-		lzmaMapPieceByteArr := make([]byte, lzmaCompressedByteBuffer.Len())
-		lzmaCompressedByteBuffer.Read(lzmaMapPieceByteArr)
-
-		decodedMapPieceByteArr := make([]byte, numDataBitsInt)
-		lzmaReaderBuffer, err := xz.NewReader(lzmaCompressedByteBuffer)
-		if numDataBitsInt != 10000 {
-			lzmaReaderBuffer.Read(decodedMapPieceByteArr)
-		}
-
-		if err != nil {
-			//TODO Bubble up errors
-			err = fmt.Errorf("Error decoding lzma encoded map piece %w", err)
-			fmt.Println(err)
-			return
-		}
-
-		fmt.Println()
-		fmt.Println(decodedMapPieceByteArr)
-
 	}
 
-}
-
-func read_int32(data []byte) (ret int) {
-	buf := bytes.NewBuffer(data)
-	binary.Read(buf, binary.BigEndian, &ret)
-	return
 }
 
 func sliceInt64(sa []string) ([]int64, error) {
