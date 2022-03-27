@@ -16,6 +16,10 @@ If the bot is successful in connecting, you should see something like this in th
 1637629641: New connection from <snip> on port 8883.
 1637629641: New client connected from <snip> as <snip>-<snip>-<snip>-<snip>-<snip>@ls1ok3/<snip> (p2, c1, k120, u'<snip>').
 ```
+## API
+
+`:8000/getMapData` will return the stored map
+![map data](/getMapData.jpg)
 
 ## TODO:
 
