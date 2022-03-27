@@ -26,7 +26,7 @@ func handleResponse(cmdName string, msgValues mxj.Map) {
 
 		switch cmdName {
 		case "GetMapM":
-			getMapDataValues(valuesMap)
+			mapInfo, _ = getMapDataValues(valuesMap)
 		case "MapP":
 			updateMapBuffer(valuesMap)
 		case "PullMP":
@@ -55,7 +55,7 @@ type MapInfo struct {
 }
 
 //valuesMap is not a pointer because map values are passed by reference
-func getMapDataValues(valuesMap map[string]interface{}) (*MapInfo, error) {
+func getMapDataValues(valuesMap map[string]interface{}) (MapInfo, error) {
 
 	var mapInfo MapInfo
 
@@ -66,6 +66,7 @@ func getMapDataValues(valuesMap map[string]interface{}) (*MapInfo, error) {
 	mapInfo.rowPiece, _ = strconv.Atoi(valuesMap["-r"].(string))
 	mapInfo.pixelWidth, _ = strconv.Atoi(valuesMap["-p"].(string))
 	mapInfo.crc, _ = sliceInt64(strings.Split(valuesMap["-m"].(string), ","))
+	mapInfo.buffer = make([][]byte, mapInfo.rowGrid*mapInfo.rowPiece, mapInfo.columnGrid*mapInfo.columnPiece)
 	// TODO: BOX
 
 	numMapPieces := mapInfo.columnPiece * mapInfo.rowPiece
@@ -74,7 +75,7 @@ func getMapDataValues(valuesMap map[string]interface{}) (*MapInfo, error) {
 		publishXML(PullMp(i))
 	}
 
-	return &mapInfo, nil
+	return mapInfo, nil
 }
 
 func updateMapBuffer(valuesMap map[string]interface{}) {
@@ -89,28 +90,47 @@ func updateMapBuffer(valuesMap map[string]interface{}) {
 			return
 		}
 
-		if base64EncodedString != "XQAABAAQJwAAAABv/f//o7f/Rz5IFXI5YVG4kijmo4YH+e7kHoLTL8U6PAFLsX7Jhrz0KgA=" {
-			//insert missing 4 bytes at index 8
-			lmzaCompressedMapPieceByteArr = append(lmzaCompressedMapPieceByteArr[:12], lmzaCompressedMapPieceByteArr[8:]...)
-			lmzaCompressedBuffer := bytes.NewBuffer(lmzaCompressedMapPieceByteArr)
+		//insert missing 4 bytes at index 8
+		//In the lzma header the length parameter is not correct (lzma format: https://svn.python.org/projects/external/xz-5.0.3/doc/lzma-file-format.txt)
+		//The header needs to be 13 bytes instead of the 9 bytes provided
+		lmzaCompressedMapPieceByteArr = append(lmzaCompressedMapPieceByteArr[:12], lmzaCompressedMapPieceByteArr[8:]...)
+		lmzaCompressedBuffer := bytes.NewBuffer(lmzaCompressedMapPieceByteArr)
 
-			decodedMapPieceByteArr := make([]byte, 10000)
-			lzmaReadCloser := lzma.NewReader(lmzaCompressedBuffer)
+		decodedMapPieceByteArr := make([]byte, 10000)
+		lzmaReadCloser := lzma.NewReader(lmzaCompressedBuffer)
 
-			lzmaReadCloser.Read(decodedMapPieceByteArr)
+		lzmaReadCloser.Read(decodedMapPieceByteArr)
+		lzmaReadCloser.Close()
 
-			if err != nil {
-				//TODO Bubble up errors
-				err = fmt.Errorf("Error decoding lzma encoded map piece %w", err)
-				fmt.Println(err)
-				return
-			}
+		if err != nil {
+			//TODO Bubble up errors
+			err = fmt.Errorf("Error decoding lzma encoded map piece %w", err)
+			fmt.Println(err)
+			return
+		}
 
-			fmt.Println()
-			fmt.Println(decodedMapPieceByteArr)
+		pieceData = append(pieceData, decodedMapPieceByteArr...)
+		pieceIndex++
+
+		if pieceIndex+1 == mapInfo.columnPiece*mapInfo.rowPiece {
+			buildBuffer()
 		}
 	}
 
+}
+
+func buildBuffer() {
+	rowStart := pieceIndex / mapInfo.rowPiece
+	columnStart := pieceIndex / mapInfo.columnPiece
+	for row := 0; row < mapInfo.rowGrid; row++ {
+		for column := 0; column < mapInfo.columnGrid; column++ {
+			bufferRow := row + rowStart*mapInfo.rowGrid
+			bufferColumn := column + columnStart*mapInfo.columnGrid
+			pieceDataPosition := mapInfo.rowGrid*row + column
+
+			mapInfo.buffer[bufferRow][bufferColumn] = pieceData[pieceDataPosition]
+		}
+	}
 }
 
 func sliceInt64(sa []string) ([]int64, error) {
@@ -124,3 +144,7 @@ func sliceInt64(sa []string) ([]int64, error) {
 	}
 	return si, nil
 }
+
+var pieceIndex = -1
+var pieceData []byte = nil
+var mapInfo = MapInfo{}
