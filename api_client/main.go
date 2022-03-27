@@ -46,5 +46,7 @@ func main() {
 	publishXML(PullM)
 	publishXML(GetMapSet)
 	publishXML(GetMapM)
+
+	setupApi()
 	<-keepAlive
 }
