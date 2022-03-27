@@ -103,31 +103,32 @@ func decodeMapPiece(valuesMap map[string]interface{}) ([]byte, error) {
 			return nil, err
 		}
 
-		//insert missing 4 bytes at index 8
-		//In the lzma header the length parameter is not correct
-		//(lzma format: https://svn.python.org/projects/external/xz-5.0.3/doc/lzma-file-format.txt)
-		//The header needs to be 13 bytes instead of the 9 bytes provided
+		//lzma header is supposed to be 13 bytes, however bot sends 9 bytes.
+		//bot sends:
+		//[0:4] - lzma properties
+		//[5:8] - 16 bit little endian dict size
+		//[9:]  - compressed lzma data
+		// ----
+		//lzma header spec says:
+		//[0:4] - lzma properties
+		//[5:13] - 32 bit little endian dict size
+		//[14:] - compressed lzma data
+		// ----
+		//so we insert 4 bytes of 0s at index 8 to convert 16 bit dict size to 32 bit
 		zeroPadding := make([]byte, 4)
 		tempSlice := lzmaCompressedMapPiece[8:]
 		tempSlice = append(zeroPadding, tempSlice...)
-		fmt.Println(tempSlice)
 		lzmaCompressedMapPiece = append(lzmaCompressedMapPiece[:8], tempSlice...)
-		fmt.Println(lzmaCompressedMapPiece[:20])
 
 		lmzaCompressedBuffer := bytes.NewBuffer(lzmaCompressedMapPiece)
 
-		decodedMapPieceByteArr := make([]byte, 10000)
+		decodedMapPiece := make([]byte, 10000)
 		lzmaReadCloser := lzma.NewReader(lmzaCompressedBuffer)
 
-		lzmaReadCloser.Read(decodedMapPieceByteArr)
+		lzmaReadCloser.Read(decodedMapPiece)
 		lzmaReadCloser.Close()
 
-		if err != nil {
-			//TODO Bubble up errors
-			err = fmt.Errorf("Error decoding lzma encoded map piece %w", err)
-			return nil, err
-		}
-		return decodedMapPieceByteArr, nil
+		return decodedMapPiece, nil
 	} else {
 		return nil, fmt.Errorf("Could not get base64 encoded string from message")
 	}
@@ -155,29 +156,13 @@ func getImageFromMapGrid() image.Image {
 	scaledImgY := len(scaledImg[0])
 	imgRGBA := image.NewRGBA(image.Rectangle{image.Point{0, 0}, image.Point{scaledImgX, scaledImgY}})
 
-	black := color.RGBA{0, 0, 0, 255}
-	brown := color.RGBA{165, 42, 42, 255}
-	white := color.RGBA{255, 255, 255, 255}
-	cyan := color.RGBA{100, 200, 200, 0xff}
-
 	for x := 0; x < scaledImgX; x++ {
 		for y := 0; y < scaledImgY; y++ {
-
-			switch scaledImg[x][y] {
-			case 0:
-				imgRGBA.Set(x, y, black)
-			case 1:
-				imgRGBA.Set(x, y, brown)
-			case 2:
-				imgRGBA.Set(x, y, white)
-
-			case 3:
-				imgRGBA.Set(x, y, cyan)
-			}
+			imgRGBA.Set(x, y, MapData(scaledImg[x][y]).MapDataColorMapping())
 		}
 	}
-	var img image.Image = imgRGBA
-	return img
+
+	return image.Image(imgRGBA)
 }
 
 func getScaledMapGrid() [][]byte {
@@ -203,7 +188,7 @@ func getScaledMapGrid() [][]byte {
 			}
 		}
 	}
-	fmt.Printf("%s %s %s %s", maxX, minX, maxY, minY)
+
 	scaledMapGrid := make([][]byte, (maxX - minX))
 	for i := 0; i < (maxX - minX); i++ {
 		scaledMapGrid[i] = make([]byte, (maxY - minY))
@@ -237,6 +222,29 @@ func sliceInt64(sa []string) ([]int64, error) {
 		si = append(si, i)
 	}
 	return si, nil
+}
+
+type MapData int
+
+const (
+	NoData MapData = iota
+	Floor
+	Wall
+	Carpet
+)
+
+func (mapData MapData) MapDataColorMapping() color.RGBA {
+	switch mapData {
+	case NoData:
+		return color.RGBA{0, 0, 0, 255} //black
+	case Floor:
+		return color.RGBA{15, 10, 222, 255} //blue
+	case Wall:
+		return color.RGBA{255, 255, 255, 255} //white
+	case Carpet:
+		return color.RGBA{100, 200, 200, 255} //cyan
+	}
+	return color.RGBA{0, 0, 0, 255} //black
 }
 
 var pieceIndex = 0
