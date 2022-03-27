@@ -51,7 +51,7 @@ type MapInfo struct {
 	pixelWidth     int
 	rowGrid        int
 	rowPiece       int
-	buffer         [][]byte
+	mapGrid        [][]byte
 }
 
 //valuesMap is not a pointer because map values are passed by reference
@@ -66,7 +66,17 @@ func getMapDataValues(valuesMap map[string]interface{}) (MapInfo, error) {
 	mapInfo.rowPiece, _ = strconv.Atoi(valuesMap["-r"].(string))
 	mapInfo.pixelWidth, _ = strconv.Atoi(valuesMap["-p"].(string))
 	mapInfo.crc, _ = sliceInt64(strings.Split(valuesMap["-m"].(string), ","))
-	mapInfo.buffer = make([][]byte, mapInfo.rowGrid*mapInfo.rowPiece, mapInfo.columnGrid*mapInfo.columnPiece)
+
+	rowBits := mapInfo.rowGrid * mapInfo.rowPiece
+	columnBits := mapInfo.columnGrid * mapInfo.columnPiece
+	fmt.Printf("%s %s", rowBits, columnBits)
+	mapInfo.mapGrid = make([][]byte, rowBits) // Make the outer slice and give it size rowBits
+	for i := 0; i < rowBits; i++ {
+		mapInfo.mapGrid[i] = make([]byte, columnBits) // Make one inner slice per iteration and give it size 10
+		for j := 0; j < columnBits; j++ {
+			mapInfo.mapGrid[i][j] = 0
+		}
+	}
 	// TODO: BOX
 
 	numMapPieces := mapInfo.columnPiece * mapInfo.rowPiece
@@ -128,9 +138,10 @@ func buildBuffer() {
 			bufferColumn := column + columnStart*mapInfo.columnGrid
 			pieceDataPosition := mapInfo.rowGrid*row + column
 
-			mapInfo.buffer[bufferRow][bufferColumn] = pieceData[pieceDataPosition]
+			mapInfo.mapGrid[bufferRow][bufferColumn] = pieceData[pieceDataPosition]
 		}
 	}
+	fmt.Println("Map Built")
 }
 
 func sliceInt64(sa []string) ([]int64, error) {
