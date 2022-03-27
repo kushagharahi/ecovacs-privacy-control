@@ -10,32 +10,45 @@ import (
 	"strings"
 
 	mxj "github.com/clbanning/mxj/v2"
-	"github.com/kjk/lzma"
+	"github.com/itchio/lzma"
 )
 
-func handleResponse(cmdName string, msgValues mxj.Map) {
+func handleResponse(cmdName string, msgValues mxj.Map) error {
 	fmt.Printf("%s %s\n", cmdName, msgValues)
 
 	values, err := msgValues.ValueForKey("ctl")
 
 	if err != nil {
 		err = fmt.Errorf("got error getting ctl values %w", err)
-		fmt.Println(err)
-		//todo bubble up errors
+		return err
 	}
 	if values != nil {
 		valuesMap := values.(map[string]interface{})
 
 		switch cmdName {
 		case "GetMapM":
-			mapInfo, _ = getMapDataValues(valuesMap)
+			mapInfo, err = getMapDataValues(valuesMap)
+			if err != nil {
+				return err
+			}
 		case "MapP":
-			updateMapBuffer(valuesMap)
+			if mapId, ok := valuesMap["-pid"].(int); ok {
+				decodedMapPiece, err := decodeMapPiece(valuesMap)
+				if err != nil {
+					return err
+				}
+				insertMapPieceIntoMapGrid(mapId, decodedMapPiece)
+			}
 		case "PullMP":
+			decodedMapPiece, err := decodeMapPiece(valuesMap)
+			if err != nil {
+				return err
+			}
+			insertMapPieceIntoMapGrid(pieceIndex, decodedMapPiece)
 			pieceIndex++
-			updateMapBuffer(valuesMap)
 		}
 	}
+	return nil
 }
 
 type MapInfo struct {
@@ -68,9 +81,6 @@ func getMapDataValues(valuesMap map[string]interface{}) (MapInfo, error) {
 	mapInfo.mapGrid = make([][]byte, rowBits) // Make the outer slice and give it size rowBits
 	for i := 0; i < rowBits; i++ {
 		mapInfo.mapGrid[i] = make([]byte, columnBits) // Make one inner slice per iteration and give it size 10
-		for j := 0; j < columnBits; j++ {
-			mapInfo.mapGrid[i][j] = 0
-		}
 	}
 
 	numMapPieces := mapInfo.columnPiece * mapInfo.rowPiece
@@ -82,23 +92,29 @@ func getMapDataValues(valuesMap map[string]interface{}) (MapInfo, error) {
 	return mapInfo, nil
 }
 
-func updateMapBuffer(valuesMap map[string]interface{}) {
+func decodeMapPiece(valuesMap map[string]interface{}) ([]byte, error) {
 	if base64EncodedString, ok := valuesMap["-p"].(string); ok {
 		//lzma is 7z compression
-		lmzaCompressedMapPieceByteArr, err := base64.StdEncoding.DecodeString(base64EncodedString)
+		lzmaCompressedMapPiece, err := base64.StdEncoding.DecodeString(base64EncodedString)
 
 		if err != nil {
 			//TODO bubble up errors
 			err = fmt.Errorf("Could not decode map piece from base64 %w", err)
-			fmt.Println(err)
-			return
+			return nil, err
 		}
 
 		//insert missing 4 bytes at index 8
-		//In the lzma header the length parameter is not correct (lzma format: https://svn.python.org/projects/external/xz-5.0.3/doc/lzma-file-format.txt)
+		//In the lzma header the length parameter is not correct
+		//(lzma format: https://svn.python.org/projects/external/xz-5.0.3/doc/lzma-file-format.txt)
 		//The header needs to be 13 bytes instead of the 9 bytes provided
-		lmzaCompressedMapPieceByteArr = append(lmzaCompressedMapPieceByteArr[:12], lmzaCompressedMapPieceByteArr[8:]...)
-		lmzaCompressedBuffer := bytes.NewBuffer(lmzaCompressedMapPieceByteArr)
+		zeroPadding := make([]byte, 4)
+		tempSlice := lzmaCompressedMapPiece[8:]
+		tempSlice = append(zeroPadding, tempSlice...)
+		fmt.Println(tempSlice)
+		lzmaCompressedMapPiece = append(lzmaCompressedMapPiece[:8], tempSlice...)
+		fmt.Println(lzmaCompressedMapPiece[:20])
+
+		lmzaCompressedBuffer := bytes.NewBuffer(lzmaCompressedMapPiece)
 
 		decodedMapPieceByteArr := make([]byte, 10000)
 		lzmaReadCloser := lzma.NewReader(lmzaCompressedBuffer)
@@ -109,19 +125,15 @@ func updateMapBuffer(valuesMap map[string]interface{}) {
 		if err != nil {
 			//TODO Bubble up errors
 			err = fmt.Errorf("Error decoding lzma encoded map piece %w", err)
-			fmt.Println(err)
-			return
+			return nil, err
 		}
-
-		updateBuffer(pieceIndex, decodedMapPieceByteArr)
-		if pieceIndex+1 == 64 {
-
-		}
+		return decodedMapPieceByteArr, nil
+	} else {
+		return nil, fmt.Errorf("Could not get base64 encoded string from message")
 	}
-
 }
 
-func updateBuffer(pieceId int, decodedMapPieceData []byte) {
+func insertMapPieceIntoMapGrid(pieceId int, decodedMapPieceData []byte) {
 	rowStart := pieceId / mapInfo.rowPiece
 	columnStart := pieceId % mapInfo.columnPiece
 
@@ -178,23 +190,41 @@ func getScaledMapGrid() [][]byte {
 			if mapInfo.mapGrid[x][y] != 0 {
 				if minX == -1 {
 					minX = x
+				} else {
+					min(minX, x)
 				}
 				if minY == -1 {
 					minY = y
+				} else {
+					minY = min(minY, y)
 				}
-				maxX = x
-				maxY = y
+				maxX = max(maxX, x)
+				maxY = max(maxY, y)
 			}
 		}
 	}
-	scaledMapGrid := make([][]byte, (maxX - minX)) // Make the outer slice and give it size rowBits
+	fmt.Printf("%s %s %s %s", maxX, minX, maxY, minY)
+	scaledMapGrid := make([][]byte, (maxX - minX))
 	for i := 0; i < (maxX - minX); i++ {
-		scaledMapGrid[i] = make([]byte, (maxY - minY)) // Make one inner slice per iteration and give it size 10
+		scaledMapGrid[i] = make([]byte, (maxY - minY))
 		for j := 0; j < (maxY - minY); j++ {
 			scaledMapGrid[i][j] = mapInfo.mapGrid[i+minX][j+minY]
 		}
 	}
 	return scaledMapGrid
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func sliceInt64(sa []string) ([]int64, error) {
@@ -209,5 +239,5 @@ func sliceInt64(sa []string) ([]int64, error) {
 	return si, nil
 }
 
-var pieceIndex = -1
+var pieceIndex = 0
 var mapInfo = MapInfo{}

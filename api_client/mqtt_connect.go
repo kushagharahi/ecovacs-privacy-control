@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/tls"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/clbanning/mxj/v2"
@@ -13,7 +14,10 @@ var messagePubHandler mqtt.MessageHandler = func(client mqtt.Client, msg mqtt.Me
 	fmt.Printf("Received message: %s from topic: %s\n", msg.Payload(), msg.Topic())
 	msgValues, _ := mxj.NewMapXml(msg.Payload())
 	cmdName := strings.Split(msg.Topic(), "/")[2]
-	handleResponse(cmdName, msgValues)
+	err := handleResponse(cmdName, msgValues)
+	if err != nil {
+		log.Println(err)
+	}
 }
 
 func sub(client mqtt.Client, topic string) {
