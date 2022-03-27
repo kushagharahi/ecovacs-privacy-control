@@ -19,6 +19,7 @@ If the bot is successful in connecting, you should see something like this in th
 ## API
 
 `:8000/getMapData` will return the stored map
+
 ![map data](/getMapData.jpg)
 
 ## TODO:
