@@ -17,14 +17,21 @@ var GetWkVer Msg = Msg{
 	cmdOpts: map[string]string{},
 }
 
+var GetDeviceInfo Msg = Msg{
+	cmdName: "GetDeviceInfo",
+	cmdOpts: map[string]string{},
+}
+
 var GetBrushLifeSpan XMLMsg = XMLMsg{
 	cmdName: "GetLifeSpan",
 	cmdOpts: mxj.Map{"-type": "Brush"},
 }
 
-var PullM XMLMsg = XMLMsg{
-	cmdName: "PullM",
-	cmdOpts: mxj.Map{"-tp": "sa", "-msid": "0", "-mid": "0"},
+func PullM(msid string, mid string) XMLMsg {
+	return XMLMsg{
+		cmdName: "PullM",
+		cmdOpts: mxj.Map{"-tp": "sa", "-msid": msid, "-mid": mid},
+	}
 }
 
 //Request Spot Areas from robot

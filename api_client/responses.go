@@ -46,9 +46,26 @@ func handleResponse(cmdName string, msgValues mxj.Map) error {
 			}
 			insertMapPieceIntoMapGrid(pieceIndex, decodedMapPiece)
 			pieceIndex++
+		case "GetMapSet":
+			getSpotAreas(valuesMap)
+		case "PullM":
+
 		}
+
 	}
 	return nil
+}
+
+// func buildSpotAreaPolygons() []image.Point
+
+func getSpotAreas(valuesMap map[string]interface{}) {
+	if msid, ok := valuesMap["-msid"].(string); ok {
+		for _, m := range valuesMap["m"].([]interface{}) {
+			if mid, ok := m.(map[string]interface{})["-mid"].(string); ok {
+				publishXML(PullM(msid, mid))
+			}
+		}
+	}
 }
 
 type MapInfo struct {

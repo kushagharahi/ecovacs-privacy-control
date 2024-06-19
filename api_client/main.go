@@ -12,7 +12,7 @@ import (
 
 var bot_serial string = "b11fceaf-5173-4190-be6e-9c37ef3dc238"
 var device_type string = "ls1ok3"
-var resource string = "zwzq"
+var resource string = "Lgsd"
 
 var client mqtt.Client
 
@@ -43,9 +43,11 @@ func main() {
 	subscribe()
 	publishJson(GetWkVer)
 	publishXML(GetBrushLifeSpan)
-	publishXML(PullM)
-	publishXML(GetMapSet)
-	publishXML(GetMapM)
+
+	//publishXML(GetMapM)
+	//publishXML(GetMapSet)
+
+	//publishXML(Stop)
 
 	setupApi()
 	<-keepAlive
