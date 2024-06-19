@@ -100,14 +100,6 @@ Back and forth communication with bot
         - the next 4 are placed into a variable called "length"
         (to be continued)
 
-
-## WIFI
- - Open ports on 192.168.0.1 (`nmap -p PORT 192.168.0.1 -Pn`)
-   - 8888: `8888/tcp open  sun-answerbook`
-   - 9876: `9876/tcp open  sd`
-     - `nmap -p 9876 --script banner 192.168.0.1 -Pn`
-       - 
-
 ## Ecovacs 900/901 Info
 CPU: ARM® Cortex®-M3 - ARM GD32F103 VGT6 CE7N618 AJ1739 
 
@@ -117,8 +109,7 @@ Bot calls the following URL for update binaries: `portal.ecouser.net/api/ota/pro
 `sn` is your bots serial found under the dustbin, `ver` is current version
 
 The response is
-```
-{"version":"1.5.3","name":"wukong","force":false,"fw0":{"version":"1.5.3","size":20020074,"checkSum":"2b695dd47f56ed65fe261e4332626149","changeLog":"","extra":{},"url":"http://url.com/update.bin”}}```
+`{"version":"1.5.3","name":"wukong","force":false,"fw0":{"version":"1.5.3","size":20020074,"checkSum":"2b695dd47f56ed65fe261e4332626149","changeLog":"","extra":{},"url":"http://url.com/update.bin”}}`
 
 In theory someone can unpack the update binaries, root them and feed them back to the robot.
 
@@ -624,6 +615,12 @@ deboot login:
 ```
 
 ### NMAP report
+
+ - Open ports on 192.168.0.1 (`nmap -p PORT 192.168.0.1 -Pn`)
+   - 8888: `8888/tcp open  sun-answerbook`
+   - 9876: `9876/tcp open  sd`
+     - `nmap -p 9876 --script banner 192.168.0.1 -Pn`
+
 ```
 Nmap scan report for 192.168.0.1
 Host is up (0.0070s latency).
