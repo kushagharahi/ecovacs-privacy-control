@@ -5,11 +5,11 @@ Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local
 
 ## Technicials
 
-A bunch (all?) of Ecovacs bots do implement do certificate pinning, so they are vulerable to MITM attacks and establishing your own local MQTT control.
+A bunch (all?) of Ecovacs bots do implement do certificate pinning, so they are vulnerable to MITM attacks and establishing your own local MQTT control.
 
 Once setup, MQTT based Ecovacs robot vaccums directly connect to `mq-ww.ecouser.net`:8883 MQTT server. With a proper DNS setup and a self signed cert for `ecouser.net`, users can redirect bot MQTT traffic to a self-hosted MQTT server
 
-ecovacs-privacy-control is a docker container that generates self-signed certificates for `ecouser.net` and launches Mosquitto (MQTT broker)
+ecovacs-privacy-control is a docker container that generates self-signed certificates for `ecouser.net` and launches Mosquitto (MQTT broker). In the future, the goal is to root ecovacs robots and directly communicate with them.
 
 ## Usage
 
@@ -646,3 +646,8 @@ SF:on:\x20close\r\nContent-Type:\x20application/json\r\nContent-Length:\x2
 SF:00\r\n\r\n");
 ```
 
+## Acknowledgements
+
+This work is done on the shoulders of giants. Huge shout out to:
+- Bumper: https://github.com/bmartin5692/bumper - Amazing documentation around doing a MITM attack to gain self hosting
+- Dennis Giese: https://dontvacuum.me/talks/37c3-2023/37c3-vacuuming-and-mowing.html - Great talk about serial vulnerabilities of ecovacs robots
