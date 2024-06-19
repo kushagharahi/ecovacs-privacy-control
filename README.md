@@ -108,6 +108,11 @@ Back and forth communication with bot
 ## Ecovacs 900/901 Info
 CPU: ARM® Cortex®-M3 - ARM GD32F103 VGT6 CE7N618 AJ1739 
 
+### Update binaries
+`portal.ecouser.net/api/ota/products/wukong/class/ls1ok3/firmware/latest.json?sn={???}&ver=X.X.X&module=fw0`
+
+`sn` is your bots serial found under the dustbin
+
 ### Serial connection
 
 - Remove the rubber gasket near the dustbin
