@@ -116,6 +116,12 @@ Bot calls the following URL for update binaries: `portal.ecouser.net/api/ota/pro
 
 `sn` is your bots serial found under the dustbin, `ver` is current version
 
+The response is
+```
+{"version":"1.5.3","name":"wukong","force":false,"fw0":{"version":"1.5.3","size":20020074,"checkSum":"2b695dd47f56ed65fe261e4332626149","changeLog":"","extra":{},"url":"http://url.com/update.bin”}}```
+
+In theory someone can unpack the update binaries, root them and feed them back to the robot.
+
 ### Serial connection
 
 - Remove the rubber gasket near the dustbin
