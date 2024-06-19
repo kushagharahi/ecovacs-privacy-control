@@ -113,6 +113,29 @@ CPU: ARM® Cortex®-M3 - ARM GD32F103 VGT6 CE7N618 AJ1739
 - Remove the rubber gasket near the dustbin
 - Pin 1 is TX, Pin 2 is RX @ 3.3V, Pin 6 GND
 - Baud rate is `115200`
+- If TX/RX are momentarily shorted, you will be presented with a ARM FIQ debugger:
+
+```
+FIQ Debugger commands:
+pc PC status
+regs Register dump
+allregs Extended Register dump
+bt Stack trace
+reboot [<c>] Reboot with command <c>
+reset [<c>] Hard reset with command <c>
+irqs Interupt status
+kmsg Kernel log
+version Kernel version
+last_kmsg Last kernel log
+sleep Allow sleep while in FIQ
+nosleep Disable sleep while in FIQ
+console Switch terminal to console
+cpu Current CPU
+cpu <number> Switch to CPU<number>
+ps Process list
+sysrq sysrq options
+sysrq <param> Execute sysrq with <param>
+```
 
 ### Serial readout
 
