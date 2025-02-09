@@ -14,4 +14,4 @@ extendedKeyUsage=serverAuth,clientAuth
 basicConstraints=critical,CA:false
 subjectAltName = @alt_names
 [ alt_names ]
-DNS.0 = *.ww.ecouser.net
+DNS.0 = *-ww.ecouser.net
