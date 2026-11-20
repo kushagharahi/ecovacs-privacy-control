@@ -9,36 +9,73 @@ import (
 	"strconv"
 	"strings"
 
-	mxj "github.com/clbanning/mxj/v2"
 	"github.com/itchio/lzma"
 )
 
-func handleResponse(cmdName string, msgValues mxj.Map) error {
+var BatteryLevel int = 0
+var ChargingState string = "Unknown"
+var VolumeLevel int = 0
+var WaterLevel int = 0
+var WaterBoxInstalled bool = false
+var CleanSpeed string = "Unknown"
+var SleepStatus string = "Unknown"
+var Errors string = ""
+var BrushLifeSpan int = 100
+var SideBrushLifeSpan int = 100
+var DustCaseHeapLifeSpan int = 100
+var DiscoveredRooms []string = []string{}
+
+func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 	fmt.Printf("%s %s\n", cmdName, msgValues)
 
-	values, err := msgValues.ValueForKey("ctl")
-
-	if err != nil {
-		err = fmt.Errorf("got error getting ctl values %w", err)
-		return err
+	if msgValues == nil {
+		return nil
 	}
-	if values != nil {
-		valuesMap := values.(map[string]interface{})
 
+	// For JSON responses, the keys might be directly on the map, not wrapped in "ctl"
+	var valuesMap map[string]interface{}
+	if queryVal, ok := msgValues["query"]; ok {
+		if qMap, ok := queryVal.(map[string]interface{}); ok {
+			if ctlVal, ok := qMap["ctl"]; ok {
+				if ctlMap, ok := ctlVal.(map[string]interface{}); ok {
+					valuesMap = ctlMap
+				}
+			} else {
+				valuesMap = qMap
+			}
+		}
+	} else if ctlVal, ok := msgValues["ctl"]; ok {
+		if ctlMap, ok := ctlVal.(map[string]interface{}); ok {
+			valuesMap = ctlMap
+		}
+	} else {
+		valuesMap = msgValues
+	}
+
+	if valuesMap != nil {
 		switch cmdName {
 		case "GetMapM":
+			var err error
 			mapInfo, err = getMapDataValues(valuesMap)
 			if err != nil {
 				return err
 			}
 		case "MapP":
-			if mapId, ok := valuesMap["-pid"].(int); ok {
-				decodedMapPiece, err := decodeMapPiece(valuesMap)
-				if err != nil {
-					return err
-				}
-				insertMapPieceIntoMapGrid(mapId, decodedMapPiece)
+			// MXJ parses integer XML attributes as float64 when mapping interface{}
+			var mapId int
+			if pidFloat, ok := valuesMap["-pid"].(float64); ok {
+				mapId = int(pidFloat)
+			} else if pidInt, ok := valuesMap["-pid"].(int); ok {
+				mapId = pidInt
+			} else if pidStr, ok := valuesMap["-pid"].(string); ok {
+				mapId, _ = strconv.Atoi(pidStr)
 			}
+
+			decodedMapPiece, err := decodeMapPiece(valuesMap)
+			if err != nil {
+				return err
+			}
+			insertMapPieceIntoMapGrid(mapId, decodedMapPiece)
 		case "PullMP":
 			decodedMapPiece, err := decodeMapPiece(valuesMap)
 			if err != nil {
@@ -46,23 +83,123 @@ func handleResponse(cmdName string, msgValues mxj.Map) error {
 			}
 			insertMapPieceIntoMapGrid(pieceIndex, decodedMapPiece)
 			pieceIndex++
-		case "GetMapSet":
+		case "GetMapSet", "MapSet":
 			getSpotAreas(valuesMap)
-		case "PullM":
-
+		case "CleanReport":
+			if clean, ok := valuesMap["clean"].(map[string]interface{}); ok {
+				if speedStr, ok := clean["-speed"].(string); ok {
+					CleanSpeed = speedStr
+				}
+				if stStr, ok := clean["-st"].(string); ok {
+					switch stStr {
+					case "h":
+						ChargingState = "Docked"
+					case "c":
+						ChargingState = "Cleaning"
+					case "p":
+						ChargingState = "Paused"
+					case "r":
+						ChargingState = "Returning"
+					}
+				}
+			}
+		case "GetBatteryInfo", "BatteryInfo":
+			if battery, ok := valuesMap["battery"].(map[string]interface{}); ok {
+				if powerStr, ok := battery["-power"].(string); ok {
+					BatteryLevel, _ = strconv.Atoi(powerStr)
+				} else if powerFloat, ok := battery["-power"].(float64); ok {
+					BatteryLevel = int(powerFloat)
+				}
+			} else if val, ok := valuesMap["value"].(float64); ok { // JSON representation
+				BatteryLevel = int(val)
+			}
+		case "GetChargeState", "ChargeState":
+			if charge, ok := valuesMap["charge"].(map[string]interface{}); ok {
+				if typeStr, ok := charge["-type"].(string); ok {
+					ChargingState = typeStr
+				}
+			} else if isCharging, ok := valuesMap["isCharging"].(float64); ok { // JSON representation
+				if isCharging == 1 {
+					ChargingState = "Charging"
+				} else {
+					ChargingState = "Discharging"
+				}
+			}
+		case "GetVolume":
+			if volume, ok := valuesMap["volume"].(map[string]interface{}); ok {
+				if valStr, ok := volume["-val"].(string); ok {
+					VolumeLevel, _ = strconv.Atoi(valStr)
+				}
+			} else if vol, ok := valuesMap["volume"].(float64); ok { // JSON representation
+				VolumeLevel = int(vol)
+			}
+		case "GetWaterPermeability", "getWaterInfo":
+			if vStr, ok := valuesMap["-v"].(string); ok {
+				WaterLevel, _ = strconv.Atoi(vStr)
+			} else if amount, ok := valuesMap["amount"].(float64); ok { // JSON representation
+				WaterLevel = int(amount)
+			}
+		case "GetWaterBoxInfo":
+			if onStr, ok := valuesMap["-on"].(string); ok {
+				WaterBoxInstalled = (onStr == "1")
+			}
+		case "GetSleepStatus":
+			if stStr, ok := valuesMap["-st"].(string); ok {
+				SleepStatus = stStr
+			}
+		case "GetCleanSpeed":
+			if speedStr, ok := valuesMap["-speed"].(string); ok {
+				CleanSpeed = speedStr
+			}
+		case "GetError":
+			if errsStr, ok := valuesMap["-errs"].(string); ok {
+				Errors = errsStr
+			}
+		case "GetLifeSpan", "LifeSpan":
+			var val int
+			if valStr, ok := valuesMap["-val"].(string); ok {
+				val, _ = strconv.Atoi(valStr)
+			} else if valFloat, ok := valuesMap["-val"].(float64); ok {
+				val = int(valFloat)
+			}
+			compType, _ := valuesMap["-type"].(string)
+			switch compType {
+			case "Brush":
+				BrushLifeSpan = val
+			case "SideBrush":
+				SideBrushLifeSpan = val
+			case "DustCaseHeap":
+				DustCaseHeapLifeSpan = val
+			}
 		}
-
 	}
 	return nil
 }
 
+
 // func buildSpotAreaPolygons() []image.Point
 
 func getSpotAreas(valuesMap map[string]interface{}) {
-	if msid, ok := valuesMap["-msid"].(string); ok {
-		for _, m := range valuesMap["m"].([]interface{}) {
-			if mid, ok := m.(map[string]interface{})["-mid"].(string); ok {
-				publishXML(PullM(msid, mid))
+	msid, _ := valuesMap["-msid"].(string)
+	if mVal, ok := valuesMap["m"]; ok {
+		switch mList := mVal.(type) {
+		case []interface{}:
+			for _, m := range mList {
+				if mMap, ok := m.(map[string]interface{}); ok {
+					if mid, ok := mMap["-mid"].(string); ok && mid != "" {
+						DiscoveredRooms = append(DiscoveredRooms, mid)
+						if msid != "" {
+							publishXML(PullM(msid, mid))
+						}
+					}
+				}
+			}
+		case map[string]interface{}:
+			if mid, ok := mList["-mid"].(string); ok && mid != "" {
+				DiscoveredRooms = append(DiscoveredRooms, mid)
+				if msid != "" {
+					publishXML(PullM(msid, mid))
+				}
 			}
 		}
 	}
