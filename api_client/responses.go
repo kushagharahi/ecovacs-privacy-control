@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"log"
 	"strconv"
 	"strings"
 
@@ -54,13 +55,21 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 
 	if valuesMap != nil {
 		switch cmdName {
-		case "GetMapM":
+		case "GetMapM", "MapM":
 			var err error
 			mapInfo, err = getMapDataValues(valuesMap)
 			if err != nil {
+				log.Printf("[MAP] getMapDataValues error: %v", err)
 				return err
 			}
+			log.Printf("[MAP] MapInfo loaded: mapId=%d, grid=%dx%d, pieces=%dx%d",
+				mapInfo.mapId, mapInfo.columnGrid, mapInfo.rowGrid, mapInfo.columnPiece, mapInfo.rowPiece)
+		case "IfHaveMap":
+			log.Printf("[MAP] IfHaveMap response: %+v", valuesMap)
+		case "GetMapSt", "MapSt":
+			log.Printf("[MAP] MapSt response: %+v", valuesMap)
 		case "MapP":
+			log.Printf("[MAP] MapP received piece: %+v", valuesMap["-pid"])
 			// MXJ parses integer XML attributes as float64 when mapping interface{}
 			var mapId int
 			if pidFloat, ok := valuesMap["-pid"].(float64); ok {
@@ -77,6 +86,7 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 			}
 			insertMapPieceIntoMapGrid(mapId, decodedMapPiece)
 		case "PullMP":
+			log.Printf("[MAP] PullMP received piece index %d", pieceIndex)
 			decodedMapPiece, err := decodeMapPiece(valuesMap)
 			if err != nil {
 				return err
@@ -84,6 +94,7 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 			insertMapPieceIntoMapGrid(pieceIndex, decodedMapPiece)
 			pieceIndex++
 		case "GetMapSet", "MapSet":
+			log.Printf("[MAP] MapSet response: %+v", valuesMap)
 			getSpotAreas(valuesMap)
 		case "CleanReport":
 			if clean, ok := valuesMap["clean"].(map[string]interface{}); ok {
@@ -307,6 +318,9 @@ func insertMapPieceIntoMapGrid(pieceId int, decodedMapPieceData []byte) {
 func getImageFromMapGrid() image.Image {
 	scaledImg := getScaledMapGrid()
 	scaledImgX := len(scaledImg)
+	if scaledImgX == 0 || len(scaledImg[0]) == 0 {
+		return image.NewRGBA(image.Rectangle{image.Point{0, 0}, image.Point{1, 1}})
+	}
 	scaledImgY := len(scaledImg[0])
 	imgRGBA := image.NewRGBA(image.Rectangle{image.Point{0, 0}, image.Point{scaledImgX, scaledImgY}})
 

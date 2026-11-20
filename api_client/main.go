@@ -1,20 +1,23 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 )
 
-var bot_serial string = "b11fceaf-5173-4190-be6e-9c37ef3dc238"
-var device_type string = "ls1ok3"
-var resource string = "Lgsd"
-
-var client mqtt.Client
+var (
+	bot_serial  string = "b11fceaf-5173-4190-be6e-9c37ef3dc238"
+	device_type string = "ls1ok3"
+	resource    string = "Lgsd"
+	client      mqtt.Client
+)
 
 func publishXML(msg XMLMsg) {
 	if activeXmppBot != nil && activeXmppBot.IsReady() {
@@ -29,43 +32,67 @@ func publishXML(msg XMLMsg) {
 		xmlPayload, _ := msg.cmdOpts.XmlIndent("", " ", "ctl")
 		xmlString := string(xmlPayload)
 		pub(client, topic, xmlString)
-	} else {
-		log.Printf("[PUBLISH] Neither XMPP bot nor MQTT broker connected. Command %s not sent.", msg.cmdName)
+		return
 	}
+
+	log.Printf("[PUBLISH] Neither XMPP bot nor MQTT broker connected. Command %s not sent.", msg.cmdName)
 }
 
 func subscribe() {
+	if client == nil || !client.IsConnected() {
+		return
+	}
 	sub(client, "iot/atr/#")
 	sub(client, fmt.Sprintf("iot/p2p/+/%s/%s/%s/#", bot_serial, device_type, resource))
 }
 
 func main() {
+	var protocolFlag string
+	flag.StringVar(&protocolFlag, "protocol", "", "Target protocol: 'xmpp' (OZMO 930), 'mqtt' (Deebot 900/901), or 'all' (default)")
+	flag.StringVar(&protocolFlag, "mode", "", "Alias for -protocol")
+	flag.Parse()
+
+	// Environment variable fallback
+	if protocolFlag == "" {
+		protocolFlag = os.Getenv("PROTOCOL")
+	}
+	if protocolFlag == "" {
+		protocolFlag = os.Getenv("MODE")
+	}
+	if protocolFlag == "" {
+		protocolFlag = "all"
+	}
+	protocol := strings.ToLower(strings.TrimSpace(protocolFlag))
+
 	keepAlive := make(chan os.Signal, 1)
 	signal.Notify(keepAlive, os.Interrupt, syscall.SIGTERM)
 
 	log.Println("=======================================================")
-	log.Println(" Starting Ecovacs Privacy Controller Server")
-	log.Println(" - Lookup Server (:8007) for OZMO 930 HTTP discovery")
-	log.Println(" - TLS XMPP Server (:5223) for OZMO 930 command & map")
+	log.Printf(" Starting Ecovacs Privacy Controller (Protocol: %s)", protocol)
 	log.Println(" - REST API (:8000) for controls and map view")
 	log.Println("=======================================================")
 
-	// Start HTTP Lookup Server (:8007) in background
-	go startLookupServer()
+	enableXmpp := (protocol == "all" || protocol == "xmpp")
+	enableMqtt := (protocol == "all" || protocol == "mqtt")
 
-	// Start TLS XMPP Server (:5223) in background
-	go startXmppServer()
+	if enableXmpp {
+		log.Println("[XMPP] Starting Lookup Server (:8007) and TLS XMPP Server (:5223)...")
+		go startLookupServer()
+		go startXmppServer()
+	} else {
+		log.Println("[XMPP] XMPP services disabled by protocol flag.")
+	}
 
-	// Optional legacy MQTT client (if ENABLE_MQTT=1)
-	enableMQTT := os.Getenv("ENABLE_MQTT")
-	if enableMQTT == "true" || enableMQTT == "1" {
+	if enableMqtt {
+		log.Println("[MQTT] Starting legacy MQTT client connection...")
 		go func() {
-			log.Println("Connecting to legacy MQTT broker...")
 			client = connect()
 			subscribe()
 			publishXML(GetVersion)
 			publishXML(GetBrushLifeSpan)
 		}()
+	} else {
+		log.Println("[MQTT] MQTT services disabled by protocol flag.")
 	}
 
 	// Start REST API (:8000)

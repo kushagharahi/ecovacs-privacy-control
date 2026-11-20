@@ -31,6 +31,12 @@ func setupApi() {
 }
 
 func getMapData(res http.ResponseWriter, req *http.Request) {
+	publishXML(GetMapM)
+	publishXML(GetMapSet)
+	publishXML(IfHaveMap)
+	publishXML(GetMapSt)
+	publishXML(SetMapAutoReport(true))
+
 	img := getImageFromMapGrid()
 	buffer := new(bytes.Buffer)
 	if err := jpeg.Encode(buffer, img, nil); err != nil {

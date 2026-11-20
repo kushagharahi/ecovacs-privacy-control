@@ -99,6 +99,10 @@ func (s *XmppBotSession) sendInitialQueries() {
 	s.SendCommand(GetWaterBoxInfo)
 	s.SendCommand(GetSleepStatus)
 	s.SendCommand(GetMapM)
+	s.SendCommand(GetMapSet)
+	s.SendCommand(IfHaveMap)
+	s.SendCommand(GetMapSt)
+	s.SendCommand(SetMapAutoReport(true))
 }
 
 func (s *XmppBotSession) startPingLoop(stopChan <-chan struct{}) {
