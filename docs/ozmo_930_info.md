@@ -1,12 +1,106 @@
-# Ecovacs OMZO 930 Info
-Also known as DG3G/ZJ1602
+# Ecovacs OZMO 930 Info
+Also known as DG3G / DR930 / Class 115 / ZJ1602
 
+## Hardware Overview
+- **CPU / SoC**: Rockchip RK3188+ (Quad-core ARM Cortex-A9, `RK30xx` platform)
+- **RAM**: 512 MiB DDR3 @ 300MHz
+- **Storage**: NAND Flash with 7 MTD partitions:
+  - `uboot`, `boot_flag`, `boot1`, `boot1_fs` (squashfs rootfs), `boot2`, `boot2_fs` (squashfs backup), `data_fs` (writable ext4 for `/data`)
+- **Internal Daemon**: `medusa` (configured via `/etc/conf/medusa/deebot_dr930.conf`)
+- **WiFi**: Realtek RTL8723BS / RTL8188 802.11n USB/SDIO module
 
-## Wifi setup without app⚠️
-1. Press reset button until it beeps
-2. Connect to robot WIFI network
-3. @{"td":"scpa","ssid":"$SSID","passphrase":"$PASSPHRASE","encrypt":"yes","append_info":"$APPEND_INFO","slk_msg":"$CONFIG_SETTINGS"}
-4. Open ports 8111 and 9376
+---
+
+## Protocol & Cloud Communication Architecture
+Unlike the Deebot 900/901 series (which connects directly to MQTT on port 8883), the **OZMO 930 uses XMPP + HTTP discovery**:
+
+1. **WiFi Provisioning (TCP Port 9876)**:
+   - When the reset button is pressed, the robot spins up AP mode `ECOVACS_xxxx` at `192.168.0.1`.
+   - The app sends a TCP packet to port 9876:
+     `@{"td":"scpa","ssid":"<SSID>","passphrase":"<PASS>","encrypt":"yes","append_info":"<LEN>","slk_msg":"<BASE64>"}\x00`
+   - `slk_msg` wraps `<ctl td='SetSlkParam' user='admin@ecouser.net' lb='<CONTROLLER_IP>'/>` prefixed with the 4-byte EcoCRC8 header (`0x42, 0xA4, 0x59, <CRC8>`).
+   - The robot saves `<CONTROLLER_IP>` as its Load Balancer (`LB`).
+
+2. **Server Discovery (HTTP Port 8007)**:
+   - On boot, the robot executes `/etc/conf/medusa/mds_wukong_get_best_iot_svr.sh`.
+   - It issues an HTTP POST request:
+     `POST http://<LB>:8007/lookup.do`
+     `Body: {"todo":"FindBest","service":"EcoMsgNew"}`
+   - The server **must** return JSON without spaces:
+     `{"result":"ok","ip":"<SERVER_IP>","port":5223}`
+
+3. **Control Channel (TLS XMPP Port 5223)**:
+   - The robot establishes a TLS connection to `<SERVER_IP>:5223`.
+   - XML commands (`<ctl td="..."/>`) are transmitted inside XMPP IQ stanzas:
+     `<iq type="set" from="..." to="..."><query xmlns="com:ctl"><ctl td="Clean" .../></query></iq>`
+   - Responses and status telemetry are published back via `<iq>` / `<message>` elements.
+
+4. **Local Robot Services**:
+   - `0.0.0.0:8111`: BOSH (HTTP-bound XMPP) server (`BoshSvr0`).
+   - `0.0.0.0:3232`: Unicast UDP command channel (`Udp1`).
+   - `0.0.0.0:2375`: Unicast UDP discovery (`Udp0`).
+   - `226.1.1.1:1900`: Multicast discovery group (`Mcast0`).
+
+---
+
+## Root Access & Persistence Secrets
+
+### 1. USB Auto-Execution Vulnerability (`/usr/bin/udisk.sh`)
+The robot's udev configuration (`/usr/lib/udev/rules.d/usb-storage.rules`) automatically invokes `/usr/bin/udisk.sh start %k` whenever a SCSI/USB storage device is plugged into the Micro-USB / service port.
+
+Inspecting `/usr/bin/udisk.sh`:
+```sh
+PRODUCT=`cjp "${RET}" string product`  # from /etc/fw.manifest
+if [ -f ${USB_MNT}/${PRODUCT}/${PRODUCT}.sh ]; then
+    sh ${USB_MNT}/${PRODUCT}/${PRODUCT}.sh $1
+fi
+```
+**Exploit**:
+1. Format a USB drive as FAT32.
+2. Create directories for all product names: `/dr930/`, `/dg3g/`, `/zj1602/`.
+3. In each directory, place `<product>.sh` (e.g. `dr930/dr930.sh`):
+   ```sh
+   #!/bin/sh
+   # Mount data partition if not mounted
+   mkdir -p /data/autostart
+   # Drop persistent telnet daemon
+   cat << 'EOF' > /data/autostart/telnet.sh
+   #!/bin/sh
+   /usr/sbin/telnetd -l /bin/sh &
+   EOF
+   chmod +x /data/autostart/telnet.sh
+   /usr/sbin/telnetd -l /bin/sh &
+   ```
+4. Plug into the vacuum via USB OTG adapter and reboot. Root shell spawns immediately on port 23!
+
+### 2. Built-in Autostart Mechanism (`/etc/rc.d/autostart.sh`)
+During every boot, `/etc/rc.sysinit` executes `/etc/rc.d/autostart.sh`, which has:
+```sh
+APPS=`ls /data/autostart/*.sh`
+for apps in ${APPS}; do
+    ${apps} start
+done
+```
+Since `/data` is on a read-write ext4 partition (`/dev/block/mtd/by-name/data_fs`), any script placed in `/data/autostart/*.sh` will run automatically on boot with full `root` privileges.
+
+### 3. Dynamic Root Password (`eco_passwd`)
+On newer firmware versions, the root password is generated dynamically per-device:
+$$\text{base64}\left(\text{sha256}\left(\{model\}\text{d4:3d:7e:fa:12:5d:C8:02:8F:0A:E2:F5}\{sn\}\textbackslash n\right)\right)$$
+Can also be calculated using Dennis Giese's tool: `https://builder.dontvacuum.me/ecopassword`.
+Older rootfs dumps use the static crypt DES hash: `root:zTfMqeON.Edcg`.
+
+---
+
+## Wifi Setup Without App
+1. Press and hold the reset button under the cover until the robot beeps and announces it is in pairing mode.
+2. Connect your laptop / machine to the robot's AP network (`ECOVACS_xxxx`).
+3. Run the provisioning script:
+   ```bash
+   python3 ozmo-930-wifi.py --ssid "<YOUR_SSID>" --passphrase "<YOUR_WIFI_PASSWORD>" --host-ip 192.168.10.178
+   ```
+4. The robot will disconnect from AP mode and join your local network.
+
+---
 
 ## Kernal output via UART
 
