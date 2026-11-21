@@ -42,9 +42,9 @@ func cancelActiveGoTo() {
 }
 
 var (
-	mqttBroker    = flag.String("mqtt-broker", getEnv("MQTT_BROKER", "tcp://192.168.1.10:1883"), "MQTT broker address")
-	controllerURL = flag.String("controller-url", getEnv("CONTROLLER_URL", "http://192.168.1.10:8000"), "Ecovacs controller base URL")
-	robotSN       = flag.String("robot-sn", getEnv("ROBOT_SN", "E0000000000000000000"), "Robot Serial Number")
+	mqttBroker    = flag.String("mqtt-broker", getEnv("MQTT_BROKER", ""), "MQTT broker address")
+	controllerURL = flag.String("controller-url", getEnv("CONTROLLER_URL", "http://127.0.0.1:8000"), "Ecovacs controller base URL")
+	robotSN       = flag.String("robot-sn", getEnv("ROBOT_SN", ""), "Robot Serial Number")
 	haPrefix      = flag.String("ha-prefix", getEnv("HA_PREFIX", "homeassistant"), "Home Assistant MQTT Discovery prefix")
 	valetudoTopic = flag.String("valetudo-topic", getEnv("VALETUDO_TOPIC", "valetudo"), "Valetudo MQTT root topic")
 	pollInterval  = flag.Duration("poll-interval", 5*time.Second, "Telemetry polling interval")
@@ -64,6 +64,13 @@ func getEnv(key, fallback string) string {
 
 func main() {
 	flag.Parse()
+
+	if *mqttBroker == "" {
+		log.Fatalf("Fatal: MQTT broker address is required (set -mqtt-broker flag or MQTT_BROKER env var)")
+	}
+	if *robotSN == "" {
+		log.Fatalf("Fatal: Robot Serial Number is required (set -robot-sn flag or ROBOT_SN env var)")
+	}
 
 	log.Println("=======================================================")
 	log.Println(" Starting Valetudo & Home Assistant MQTT Bridge")
@@ -407,20 +414,28 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 			activeGoToCancel = cancel
 			activeGoToLock.Unlock()
 
+			// Enable silent goto on robot (suppresses voice prompt "Starting to clean" and keeps suction motors at 0 RPM)
+			callAPI(httpCli, "/silentGoto?enable=1")
+			time.Sleep(300 * time.Millisecond)
+
 			// On OZMO 930, navigate to target point via 500mm x 500mm zone centered at (rx, ry)
 			callAPI(httpCli, fmt.Sprintf("/clean?act=s&type=custom&p=%d,%d,%d,%d", rx-250, ry-250, rx+250, ry+250))
 
 			// Background arrival watcher: monitors robot's physical position via /status telemetry
-			// When within 350mm of target, stops the clean task so the robot parks and doesn't vacuum
+			// When within 450mm of target, stops the clean task and halts motion so the robot parks
 			go func(ctx context.Context, targetX, targetY int) {
 				ticker := time.NewTicker(500 * time.Millisecond)
 				defer ticker.Stop()
-				// Give robot 2 seconds to transition out of dock/idle and begin movement
-				time.Sleep(2 * time.Second)
+
+				hasStartedMoving := false
+				startTime := time.Now()
+				lastLogTime := time.Now()
 
 				for {
 					select {
 					case <-ctx.Done():
+						log.Printf("[GOTO] Arrival watcher cancelled (context done)")
+						callAPI(httpCli, "/silentGoto?enable=0")
 						return
 					case <-ticker.C:
 						resp, err := httpCli.Get(*controllerURL + "/status")
@@ -434,9 +449,19 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 						}
 						resp.Body.Close()
 
-						// If robot was stopped, returned home, or errored elsewhere, stop tracking
-						if st.CleanSpeed == "stop" || st.CleanSpeed == "idle" || st.ChargingState == "SlotCharging" {
-							return
+						// Check if robot has left dock and started transit
+						if !hasStartedMoving {
+							if st.ChargingState != "SlotCharging" && st.CleanSpeed != "stop" && st.CleanSpeed != "idle" {
+								hasStartedMoving = true
+								log.Printf("[GOTO] Robot has disengaged dock/idle and begun moving towards (%d, %d)", targetX, targetY)
+							} else if time.Since(startTime) > 12*time.Second {
+								log.Printf("[GOTO] Robot failed to begin movement within 12s (state=%s, speed=%s), exiting watcher", st.ChargingState, st.CleanSpeed)
+								callAPI(httpCli, "/silentGoto?enable=0")
+								return
+							} else {
+								// Still in startup/undocking phase, continue waiting
+								continue
+							}
 						}
 
 						// Calculate current robot physical coordinate in mm
@@ -446,10 +471,28 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 						dy := float64(targetY - currY)
 						dist := math.Sqrt(dx*dx + dy*dy)
 
-						// When robot arrives within 350mm (~14 inches, vacuum radius ~175mm) of target point
-						if dist <= 350 {
+						if time.Since(lastLogTime) >= 1500*time.Millisecond {
+							log.Printf("[GOTO] Tracking: Robot at (%d, %d), Target (%d, %d), Dist=%.0fmm, State=%s", currX, currY, targetX, targetY, dist, st.ChargingState)
+							lastLogTime = time.Now()
+						}
+
+						// When robot arrives within 450mm (~18 inches, robot radius is ~175mm) of target point
+						if dist <= 450 {
 							log.Printf("[GOTO] Destination reached! Robot at (%d, %d), target (%d, %d), dist=%.0fmm. Halting clean so robot parks without cleaning.", currX, currY, targetX, targetY, dist)
+							// 1. Halt clean task
 							callAPI(httpCli, "/clean?act=stop")
+							// 2. Freeze wheel motion immediately
+							callAPI(httpCli, "/move?act=stop")
+							// 3. Disable silent goto after brief delay
+							time.Sleep(300 * time.Millisecond)
+							callAPI(httpCli, "/silentGoto?enable=0")
+							return
+						}
+
+						// If robot was stopped or returned to dock by another user action AFTER moving started
+						if st.CleanSpeed == "stop" || st.CleanSpeed == "idle" || st.ChargingState == "SlotCharging" {
+							log.Printf("[GOTO] Robot stopped externally (speed=%s, state=%s), ending watcher", st.CleanSpeed, st.ChargingState)
+							callAPI(httpCli, "/silentGoto?enable=0")
 							return
 						}
 					}
@@ -794,6 +837,7 @@ func startMapLoop(c mqtt.Client, topicPrefix string, httpCli *http.Client, stopC
 			"last_updated":  time.Now().Unix(),
 			"robot_pixel_x": curStatus.RobotPixelX,
 			"robot_pixel_y": curStatus.RobotPixelY,
+			"pose_valid":    curStatus.PoseValid,
 			"robot_angle":   curStatus.RobotAngle,
 		}
 		if attrJSON, err := json.Marshal(attrPayload); err == nil {

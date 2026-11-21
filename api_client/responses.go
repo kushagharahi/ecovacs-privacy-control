@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"io"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,6 +57,7 @@ var (
 
 var RobotPosX int = 0
 var RobotPosY int = 0
+var RobotPoseValid bool = false
 var RobotAngle int = 0
 var ChargerPosX int = 0
 var ChargerPosY int = 0
@@ -233,6 +235,46 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 				}
 			}
 		case "GetPos", "Pos":
+			// In Pos packets, if t="c", it indicates the charging dock position
+			if tType, ok := valuesMap["-t"].(string); ok && tType == "c" {
+				pStr := ""
+				if p, ok := valuesMap["-p"].(string); ok {
+					pStr = p
+				} else if pos, ok := valuesMap["pos"].(map[string]interface{}); ok {
+					if ps, ok := pos["-pos"].(string); ok {
+						pStr = ps
+					}
+				}
+				if pStr != "" {
+					pStr = strings.Trim(pStr, "[]")
+					parts := strings.Split(pStr, ",")
+					if len(parts) >= 2 {
+						rawX, _ := strconv.ParseFloat(parts[0], 64)
+						rawY, _ := strconv.ParseFloat(parts[1], 64)
+						center := 400
+						if len(mapInfo.mapGrid) > 0 {
+							center = len(mapInfo.mapGrid) / 2
+						}
+						ChargerPosX = center + int(rawX/50.0)
+						ChargerPosY = center + int(rawY/50.0)
+						log.Printf("[POS] Pos packet had t=c, assigned to ChargerPos=(%d,%d)", ChargerPosX, ChargerPosY)
+					}
+				}
+				break
+			}
+
+			// For robot pose, check if SLAM localization is valid
+			if v, ok := valuesMap["-valid"].(string); ok && v == "0" {
+				RobotPoseValid = false
+				log.Printf("[POS] Robot reports unlocalized pose (valid=0), ignoring fallback boot coordinates (%v)", valuesMap["-p"])
+				break
+			} else if v, ok := valuesMap["-valid"].(float64); ok && v == 0 {
+				RobotPoseValid = false
+				log.Printf("[POS] Robot reports unlocalized pose (valid=0), ignoring fallback boot coordinates (%v)", valuesMap["-p"])
+				break
+			}
+			RobotPoseValid = true
+
 			pStr := ""
 			if p, ok := valuesMap["-p"].(string); ok {
 				pStr = p
@@ -265,12 +307,6 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 					RobotAngle, _ = strconv.Atoi(aStr)
 				}
 			}
-			// In Pos packets, if t="c", it indicates the charging dock position
-			if tType, ok := valuesMap["-t"].(string); ok && tType == "c" {
-				ChargerPosX = RobotPosX
-				ChargerPosY = RobotPosY
-				log.Printf("[POS] Pos packet had t=c, assigned to ChargerPos=(%d,%d)", ChargerPosX, ChargerPosY)
-			}
 		case "GetChargerPos", "ChargerPos":
 			pStr := ""
 			if p, ok := valuesMap["-p"].(string); ok {
@@ -292,6 +328,16 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 					}
 					ChargerPosX = center + int(rawX/50.0)
 					ChargerPosY = center + int(rawY/50.0)
+					if overrideX := os.Getenv("ROBOT_DOCK_X"); overrideX != "" {
+						if xVal, err := strconv.Atoi(overrideX); err == nil {
+							ChargerPosX = xVal
+						}
+					}
+					if overrideY := os.Getenv("ROBOT_DOCK_Y"); overrideY != "" {
+						if yVal, err := strconv.Atoi(overrideY); err == nil {
+							ChargerPosY = yVal
+						}
+					}
 					log.Printf("[POS] Parsed ChargerPos: raw=(%v,%v) -> grid=(%d,%d)", rawX, rawY, ChargerPosX, ChargerPosY)
 				}
 			}

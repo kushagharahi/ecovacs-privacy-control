@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -29,7 +30,23 @@ func getEnv(key, defaultVal string) string {
 }
 
 func handleLookup(w http.ResponseWriter, r *http.Request) {
-	serverIP := getEnv("SERVER_IP", getEnv("CONTROLLER_IP", "192.168.1.10"))
+	serverIP := serverIPFlag
+	if serverIP == "" {
+		serverIP = getEnv("SERVER_IP", getEnv("CONTROLLER_IP", ""))
+	}
+	if serverIP == "" {
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			serverIP = h
+		} else {
+			serverIP = host
+		}
+	}
+	if serverIP == "" || serverIP == "localhost" || serverIP == "127.0.0.1" {
+		log.Printf("[LOOKUP] Error: SERVER_IP or CONTROLLER_IP is required (set SERVER_IP env var or -server-ip flag)")
+		http.Error(w, `{"result":"fail","message":"SERVER_IP environment variable or -server-ip flag is required"}`, http.StatusInternalServerError)
+		return
+	}
 	xmppPortStr := getEnv("XMPP_PORT", "5223")
 	xmppPort, _ := strconv.Atoi(xmppPortStr)
 	if xmppPort == 0 {

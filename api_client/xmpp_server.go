@@ -40,6 +40,19 @@ func (s *XmppBotSession) IsReady() bool {
 	return s != nil && s.isReady
 }
 
+func (s *XmppBotSession) RemoteIP() string {
+	botLock.RLock()
+	defer botLock.RUnlock()
+	if s == nil || s.conn == nil {
+		return ""
+	}
+	addr := s.conn.RemoteAddr().String()
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		return h
+	}
+	return addr
+}
+
 func (s *XmppBotSession) WriteRaw(data string) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()

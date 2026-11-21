@@ -13,10 +13,12 @@ import (
 )
 
 var (
-	bot_serial  string = "b11fceaf-5173-4190-be6e-9c37ef3dc238"
-	device_type string = "ls1ok3"
-	resource    string = "Lgsd"
-	client      mqtt.Client
+	bot_serial   string = "b11fceaf-5173-4190-be6e-9c37ef3dc238"
+	device_type  string = "ls1ok3"
+	resource     string = "Lgsd"
+	client       mqtt.Client
+	serverIPFlag string
+	robotIPFlag  string
 )
 
 func publishXML(msg XMLMsg) {
@@ -50,6 +52,8 @@ func main() {
 	var protocolFlag string
 	flag.StringVar(&protocolFlag, "protocol", "", "Target protocol: 'xmpp' (OZMO 930), 'mqtt' (Deebot 900/901), or 'all' (default)")
 	flag.StringVar(&protocolFlag, "mode", "", "Alias for -protocol")
+	flag.StringVar(&serverIPFlag, "server-ip", "", "External/advertised server IP for robot connection (env: SERVER_IP or CONTROLLER_IP)")
+	flag.StringVar(&robotIPFlag, "robot-ip", "", "Robot IP address for telnet commands (env: ROBOT_IP)")
 	flag.Parse()
 
 	// Environment variable fallback
@@ -61,6 +65,15 @@ func main() {
 	}
 	if protocolFlag == "" {
 		protocolFlag = "all"
+	}
+	if serverIPFlag == "" {
+		serverIPFlag = os.Getenv("SERVER_IP")
+	}
+	if serverIPFlag == "" {
+		serverIPFlag = os.Getenv("CONTROLLER_IP")
+	}
+	if robotIPFlag == "" {
+		robotIPFlag = os.Getenv("ROBOT_IP")
 	}
 	protocol := strings.ToLower(strings.TrimSpace(protocolFlag))
 

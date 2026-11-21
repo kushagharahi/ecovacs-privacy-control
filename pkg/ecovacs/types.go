@@ -32,6 +32,7 @@ type StatusResponse struct {
 	ChargerPosY          int      `json:"charger_y"`
 	RobotPixelX          int      `json:"robot_pixel_x"`
 	RobotPixelY          int      `json:"robot_pixel_y"`
+	PoseValid            bool     `json:"pose_valid"`
 	ChargerPixelX        int      `json:"charger_pixel_x"`
 	ChargerPixelY        int      `json:"charger_pixel_y"`
 	CropMinX             int      `json:"crop_min_x"`
