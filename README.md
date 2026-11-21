@@ -61,6 +61,9 @@ If the bot is successful in connecting, you should see something like this in th
 - Run controller and HA mqtt bridge on robot itself, not requiring a server at all
 - Strip off ecovacs phone homes (is this even worth doing?)
 - Xiaomi map lovelace auto create map areas https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card/ 
+- Add one click deployment for custom firmware patches
+- add tests
+  - Add integration tests via firmware emulation in qemu
 
 
 ## Acknowledgements
