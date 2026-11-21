@@ -34,11 +34,13 @@ The robot replies with:
 
 | Command (`td`) | Attributes / XML Payload | Response XML | Description |
 | :--- | :--- | :--- | :--- |
-| `Clean` | `act="clean"` `type="auto"` | `<ctl td="Clean" ret="ok"/>` | Start / Resume automatic whole-house cleaning. |
-| `Clean` | `act="pause"` | `<ctl td="Clean" ret="ok"/>` | Pause active cleaning task. |
-| `Clean` | `act="stop"` | `<ctl td="Clean" ret="ok"/>` | Stop active cleaning task and return to idle. |
-| `Clean` | `act="clean"` `type="spot_area"`<br>`<clean type="spot_area" mid="{MID}" msid="{MSID}" sa="{ROOM_IDS}"/>` | `<ctl td="Clean" ret="ok"/>` | Clean specific spot area(s) / rooms (e.g. `sa="0,1"`). |
-| `Clean` | `act="clean"` `type="custom"`<br>`<clean type="custom" p="{X1,Y1,X2,Y2}" count="{1\|2}"/>` | `<ctl td="Clean" ret="ok"/>` | Clean custom rectangular boundary coordinates. |
+| `Clean` | `act="s"` `type="auto"` | `<ctl td="Clean" ret="ok"/>` | Start / Resume automatic whole-house cleaning (Task 0). |
+| `Clean` | `act="p"` | `<ctl td="Clean" ret="ok"/>` | Pause active cleaning task (`act="p"`). |
+| `Clean` | `act="h"` | `<ctl td="Clean" ret="ok"/>` | Stop/halt active cleaning task and return to idle (`act="h"`). |
+| `Clean` | `act="r"` | `<ctl td="Clean" ret="ok"/>` | Resume paused cleaning task (`act="r"`). |
+| `Clean` | `act="s"` `type="SpotArea"` `mid="{MID_LIST}"` `deep="1"` | `<ctl td="Clean" ret="ok"/>` | Clean specific spot area(s) / rooms (Task 2, e.g. `mid="0,1"`). **Must not include `p`**. |
+| `Clean` | `act="s"` `type="SpotArea"` `p="{X1,Y1,X2,Y2}"` `deep="1"` | `<ctl td="Clean" ret="ok"/>` | Clean custom rectangular zone coordinates (Task 9). **Must not include `mid`**. |
+| `Clean` | `act="s"` `type="spot"` `p="{X,Y}"` | `<ctl td="Clean" ret="ok"/>` | Single-point localized spot clean (Task 1). |
 | `GetCleanState` | None | `<ctl td="GetCleanState" type="auto" state="clean" act="clean"/>` | Query current cleaning state (`clean`, `pause`, `stop`, `idle`). |
 | `GetCleanSum` | None | `<ctl td="GetCleanSum" totalCount="45" totalTime="3600" totalArea="150"/>` | Lifetime cleaning statistics (count, total seconds, sq. meters). |
 | `GetCleanLogs` | `count="10"` | `<ctl td="GetCleanLogs"><log id="1" t="1609459200" time="1800" area="45" .../></ctl>` | Retrieve past clean history records. |
@@ -246,7 +248,7 @@ On startup, the controller publishes MQTT auto-discovery configuration to:
   "name": "Deebot OZMO 930",
   "unique_id": "ozmo930_vacuum",
   "schema": "state",
-  "supported_features": ["start", "pause", "stop", "return_home", "battery", "status", "locate", "fan_speed"],
+  "supported_features": ["start", "pause", "stop", "return_home", "battery", "status", "locate"],
   "command_topic": "vacuum/ozmo930/command",
   "state_topic": "vacuum/ozmo930/state",
   "device": {

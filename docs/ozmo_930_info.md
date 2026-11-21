@@ -48,17 +48,25 @@ Unlike the Deebot 900/901 series (which connects directly to MQTT on port 8883),
 ### 1. USB Auto-Execution Vulnerability (`/usr/bin/udisk.sh`)
 The robot's udev configuration (`/usr/lib/udev/rules.d/usb-storage.rules`) automatically invokes `/usr/bin/udisk.sh start %k` whenever a SCSI/USB storage device is plugged into the Micro-USB / service port.
 
-Inspecting `/usr/bin/udisk.sh`:
+Inspecting `/usr/bin/udisk.sh` directly from `research/930_DUMP`:
 ```sh
-PRODUCT=`cjp "${RET}" string product`  # from /etc/fw.manifest
-if [ -f ${USB_MNT}/${PRODUCT}/${PRODUCT}.sh ]; then
-    sh ${USB_MNT}/${PRODUCT}/${PRODUCT}.sh $1
-fi
+load () {
+	PRODUCT=dr930
+	
+	mkdir -p ${USB_MNT}
+	umount ${USB_MNT}
+	mount ${DEV} ${USB_MNT}
+        
+    if [ -f ${USB_MNT}/${PRODUCT}/${PRODUCT}.sh ]
+    then
+		sh ${USB_MNT}/${PRODUCT}/${PRODUCT}.sh
+    fi
+}
 ```
 **Exploit**:
 1. Format a USB drive as FAT32.
-2. Create directories for all product names: `/dr930/`, `/dg3g/`, `/zj1602/`.
-3. In each directory, place `<product>.sh` (e.g. `dr930/dr930.sh`):
+2. Create directory `/dr930/` on the USB drive.
+3. In `/dr930/`, place `dr930.sh`:
    ```sh
    #!/bin/sh
    # Mount data partition if not mounted
