@@ -1,0 +1,5 @@
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates
+WORKDIR /app
+COPY cmd/valetudo-bridge/valetudo-bridge-linux-amd64 /app/valetudo-bridge
+ENTRYPOINT ["/app/valetudo-bridge"]

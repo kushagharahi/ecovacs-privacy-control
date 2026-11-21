@@ -67,6 +67,18 @@ func main() {
 	keepAlive := make(chan os.Signal, 1)
 	signal.Notify(keepAlive, os.Interrupt, syscall.SIGTERM)
 
+	hupChan := make(chan os.Signal, 1)
+	signal.Notify(hupChan, syscall.SIGHUP)
+	go func() {
+		for range hupChan {
+			log.Println("[RELOAD] Received SIGHUP! Re-executing binary in-place without container restart...")
+			binary, err := os.Executable()
+			if err == nil {
+				syscall.Exec(binary, os.Args, os.Environ())
+			}
+		}
+	}()
+
 	log.Println("=======================================================")
 	log.Printf(" Starting Ecovacs Privacy Controller (Protocol: %s)", protocol)
 	log.Println(" - REST API (:8000) for controls and map view")

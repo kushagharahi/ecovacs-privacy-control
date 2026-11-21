@@ -56,18 +56,21 @@ func (s *XmppBotSession) SendCommand(msg XMLMsg) error {
 		return fmt.Errorf("bot is not connected or ready")
 	}
 
+	reqID := strconv.FormatInt(time.Now().UnixNano(), 10)
 	opts := mxj.Map{}
 	for k, v := range msg.cmdOpts {
 		opts[k] = v
 	}
 	opts["-td"] = msg.cmdName
+	if _, ok := opts["-id"]; !ok {
+		opts["-id"] = reqID[len(reqID)-4:]
+	}
 
 	xmlPayload, err := opts.XmlIndent("", " ", "ctl")
 	if err != nil {
 		return fmt.Errorf("failed to format XML: %w", err)
 	}
 
-	reqID := strconv.FormatInt(time.Now().UnixNano(), 10)
 	stanza := fmt.Sprintf(`<iq type="set" id="%s" to="%s" from="admin@ecouser.net"><query xmlns="com:ctl">%s</query></iq>`,
 		reqID, s.jid, string(xmlPayload))
 
@@ -100,8 +103,10 @@ func (s *XmppBotSession) sendInitialQueries() {
 	s.SendCommand(GetSleepStatus)
 	s.SendCommand(GetMapM)
 	s.SendCommand(GetMapSet)
+	s.SendCommand(GetMapVirtualWalls)
 	s.SendCommand(IfHaveMap)
 	s.SendCommand(GetMapSt)
+	s.SendCommand(GetTrM)
 	s.SendCommand(SetMapAutoReport(true))
 }
 
@@ -308,7 +313,7 @@ func handleXmppClient(conn net.Conn, tlsConfig *tls.Config) {
 						}
 					}
 					if bot.sn == "" {
-						bot.sn = "E0000739918608261527" // Fallback to detected SN
+						bot.sn = "E0000000000000000000" // Fallback to generic SN
 					}
 
 					log.Printf("[XMPP-AUTH] Authenticated bot SN: %s", bot.sn)
@@ -440,7 +445,7 @@ func handleIqStanza(bot *XmppBotSession, iq Stanza) {
 	}
 
 	if cmdName == "" {
-		// Fallback by checking child elements of <ctl>
+		// Fallback by checking child elements or attributes of <ctl>
 		if strings.Contains(rawString, "<volume") {
 			cmdName = "GetVolume"
 		} else if strings.Contains(rawString, "<ver") {
@@ -451,6 +456,40 @@ func handleIqStanza(bot *XmppBotSession, iq Stanza) {
 			cmdName = "ChargeState"
 		} else if strings.Contains(rawString, "<clean") {
 			cmdName = "CleanReport"
+		} else if strings.Contains(rawString, " r='") && strings.Contains(rawString, " c='") && strings.Contains(rawString, " m='") {
+			cmdName = "MapM"
+		} else if strings.Contains(rawString, "tp='sa'") || strings.Contains(rawString, "tp=\"sa\"") || strings.Contains(rawString, "tp='vw'") || strings.Contains(rawString, "tp=\"vw\"") {
+			cmdName = "MapSet"
+		} else if strings.Contains(rawString, "st='built'") || strings.Contains(rawString, "st=\"built\"") || strings.Contains(rawString, "st='building'") {
+			cmdName = "MapSt"
+		} else if strings.Contains(rawString, "t='p'") || strings.Contains(rawString, "t=\"p\"") {
+			cmdName = "Pos"
+		} else if (strings.Contains(rawString, " p='") || strings.Contains(rawString, " p=\"")) && (strings.Contains(rawString, " a='") || strings.Contains(rawString, " a=\"")) {
+			if strings.Contains(rawString, "t='c'") || strings.Contains(rawString, "t=\"c\"") {
+				cmdName = "ChargerPos"
+			} else if strings.Contains(rawString, "valid=") {
+				cmdName = "Pos"
+			} else {
+				cmdName = "ChargerPos"
+			}
+		} else if strings.Contains(rawString, "type='Brush'") || strings.Contains(rawString, "type='SideBrush'") || strings.Contains(rawString, "type='DustCaseHeap'") {
+			cmdName = "GetLifeSpan"
+		} else if (strings.Contains(rawString, " v='") || strings.Contains(rawString, " v=\"")) && !strings.Contains(rawString, "<volume") && !strings.Contains(rawString, "<battery") && !strings.Contains(rawString, "<charge") && !strings.Contains(rawString, "<clean") && !strings.Contains(rawString, "td=") {
+			cmdName = "GetWaterPermeability"
+		} else if strings.Contains(rawString, "trid") && strings.Contains(rawString, "tr=") {
+			cmdName = "GetTr"
+		} else if strings.Contains(rawString, "trid") && (strings.Contains(rawString, "GetTrM") || strings.Contains(rawString, "TrM")) {
+			cmdName = "GetTrM"
+		} else if strings.Contains(rawString, " p='") && len(rawString) > 200 {
+			// Base64 LZMA map piece payload
+			cmdName = "PullMP"
+		} else if strings.Contains(rawString, "id='onoff_") || strings.Contains(rawString, "id=\"onoff_") {
+			cmdName = "GetOnOff"
+		} else if strings.Contains(rawString, "id='cleansum") || strings.Contains(rawString, "id=\"cleansum") || ((strings.Contains(rawString, " a='") || strings.Contains(rawString, " a=\"")) && strings.Contains(rawString, " l='") && strings.Contains(rawString, " c='")) {
+			cmdName = "GetCleanSum"
+		} else if (strings.Contains(rawString, " m='") || strings.Contains(rawString, " m=\"")) && (strings.Contains(rawString, ";") || strings.Contains(rawString, "[")) {
+			// Room/Spot Area polygon or virtual wall/no-go coordinates response
+			cmdName = "PullM"
 		}
 	}
 

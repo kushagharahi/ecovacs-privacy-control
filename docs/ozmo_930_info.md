@@ -96,7 +96,7 @@ Older rootfs dumps use the static crypt DES hash: `root:zTfMqeON.Edcg`.
 2. Connect your laptop / machine to the robot's AP network (`ECOVACS_xxxx`).
 3. Run the provisioning script:
    ```bash
-   python3 ozmo-930-wifi.py --ssid "<YOUR_SSID>" --passphrase "<YOUR_WIFI_PASSWORD>" --host-ip 192.168.10.178
+   python3 ozmo-930-wifi.py --ssid "<YOUR_SSID>" --passphrase "<YOUR_WIFI_PASSWORD>" --host-ip <HOST_IP>
    ```
 4. The robot will disconnect from AP mode and join your local network.
 

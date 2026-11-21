@@ -29,7 +29,7 @@ func getEnv(key, defaultVal string) string {
 }
 
 func handleLookup(w http.ResponseWriter, r *http.Request) {
-	serverIP := getEnv("SERVER_IP", getEnv("CONTROLLER_IP", "192.168.10.178"))
+	serverIP := getEnv("SERVER_IP", getEnv("CONTROLLER_IP", "192.168.1.10"))
 	xmppPortStr := getEnv("XMPP_PORT", "5223")
 	xmppPort, _ := strconv.Atoi(xmppPortStr)
 	if xmppPort == 0 {

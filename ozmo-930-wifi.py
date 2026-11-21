@@ -124,7 +124,7 @@ def parse_args():
     parser.add_argument("--ssid", required=True, help="WiFi network SSID")
     parser.add_argument("--passphrase", required=True, help="WiFi password")
     parser.add_argument("--admin-user", default="admin@ecouser.net", help="Admin username (default: admin@ecouser.net)")
-    parser.add_argument("--host-ip", default="192.168.10.178", help="IP address of local controller / DNS sink (iot-jail host)")
+    parser.add_argument("--host-ip", default="192.168.1.10", help="IP address of local controller / DNS sink (<HOST_IP>)")
     parser.add_argument("--robot-ip", default="192.168.0.1", help="Robot IP in AP pairing mode")
     parser.add_argument("--port", type=int, default=9876, help="Robot TCP provisioning port")
     parser.add_argument("-i", "--interactive", action="store_true", help="Prompt interactively for parameters")

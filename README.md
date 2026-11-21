@@ -1,7 +1,14 @@
 # ecovacs-privacy-control
-Privacy first API control for Ecovacs MQTT based vaccums -- tested with Ecovacs Deebot 900/901 series and OZMO 930 _only_
+Privacy first API control for Ecovacs MQTT based vaccums -- tested with Ecovacs ~~Deebot 900/901 series and~~ OZMO 930 _only_
 
-Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local API.
+Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local API. :check:
+
+> [!WARNING]
+> There is a lot of AI slop in this repo. Take a backup of your robots data before you start messing with it <insert how to do the backup>
+> I've personally tested most of everything in here with my 930 OZMO but it's not well reviewed and very much vibe coded.
+
+
+As it is now, you can run the controller and the bridge and HA will pick up the vacuum. You can setup map control with https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card/ instructions to come
 
 ## Technicials
 
@@ -44,61 +51,17 @@ If the bot is successful in connecting, you should see something like this in th
 
 - Create MQTT Broker with TLS config needed for bot to connect to local server ✅
 - Connect robot to WIFI without app ✅
-- Document MQTT message schema/contents for sending bot commands ⚠ (WIP)
-- Document MQTT message schema/content for receiving bot info ⚠ (WIP)
-- Create local API to send/read MQTT messages ⚠ (WIP)
-- Gain root access ⚠ (WIP)
+- Document ~~MQTT~~ xmpp message schema/contents for sending bot commands ✅
+- Document ~~MQTT~~ xmpp message schema/content for receiving bot info ✅
+- Create local API to send/read MQTT messages ✅
+- Gain root access ✅
+- Fix pause button
+- Ability to add rooms from HA
+- Drive robot around without cleaning
+- Run controller and HA mqtt bridge on robot itself, not requiring a server at all
+- Strip off ecovacs phone homes (is this even worth doing?)
+- Xiaomi map lovelace auto create map areas https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card/ 
 
-
-### MQTT Communication
-Topic Level Variables (Unique per device)
-- `$bot_serial` - This is the bots unique serial - format looks something like this `b11fceaf-5173-4190-be6e-9c37ef3dc238`
-- `$device_type` - This is the type of bot - format looks something like this `ls1ok3`, `131`, or `Deepo9`
-- `$resource` - This is unique to the bot? The format on mine looks like `zwzq`
-- `$x` - Any string (for publishing messages for the bot to react to)
-
-Payload XML elements
-- `ts` - timestamp
-- `td` - functionality
-
-Auto Bot Published - Docked
-| Function | Topic | Payload | Notes |
-|-|-|-|-|
-| Battery Info | `iot/atr/BatteryInfo/$bot_serial/$device_type/$resource/x` | `<ctl ts='1644594388465' td='BatteryInfo'><battery power='100'/></ctl>` | - |
-| Charge State | `iot/atr/ChargeState/$bot_serial/$device_type/$resource/x` | `<ctl ts='1644594388466' td='ChargeState'><charge type='SlotCharging' h='' r='' s='' g='0'/></ctl>` | `type` can be `Going`, `SlotCharging`, `WireCharging`, `Idle` |
-| Sleep Status | `iot/atr/SleepStatus/$bot_serial/$device_type/$resource/x` | `<ctl ts='1644594398677' td='SleepStatus' st='1'/>` | |
-
-Auto Bot Published - Cleaning
-| Function | Topic | Payload | Notes |
-|-|-|-|-|
-| BigDataCleanInfoReport | | | |
-| CleanedMap | | | |
-| CleanedMapSet | | | |
-| CleanedPos | | | |
-| CleanedTrace | | | |
-| CleanReport | | | |
-| CleanReportServer | | | |
-| CleanSt | | | |
-| errors | | | |
-| MapP | | | |
-| MapSt | | | |
-| Pos | | | |
-| trace | | | |
-
-Back and forth communication with bot
-| Function | Publishing Topic | Publishing Payload | Response Topic | Response Payload | Notes |
-|-|-|-|-|-|-|
-| Get software version | `iot/p2p/GetWKVer/$x/$x/$x/$bot_serial/$device_type/$resource/p/$x/j` | `{}` | `iot/p2p/GetWKVer/$bot_serial/$device_type/$resource/$x/$x/$x/p/$x/j` | `{"ret":"ok","ver":"0.13.0"}` | -|
-
-
-## Map Decoding Notes
-
-- MapP topic contains an element `p` which contains a base64 encoded string
-    - `p` is decoded from base64 into a byte array
-    - a ByteArrayInputStream is created off of the resulting byte array
-        - The first 5 bytes are placed into a variable called "props"
-        - the next 4 are placed into a variable called "length"
-        (to be continued)
 
 ## Acknowledgements
 

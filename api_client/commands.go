@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strconv"
 
 	mxj "github.com/clbanning/mxj/v2"
@@ -73,17 +74,40 @@ func SetWaterPermeability(level int) XMLMsg {
 }
 
 // Clean starts, pauses, or stops cleaning
-// act: "clean", "pause", "stop"
-// cleanType: "auto", "border", "spot", "spot_area"
+// act: "start" ("s"), "pause" ("p"), "resume" ("r"), "stop" ("h")
+// cleanType: "auto", "border", "spot", "SpotArea"
 func Clean(act string, cleanType string) XMLMsg {
+	actCode := "s"
+	switch act {
+	case "stop", "halt", "h":
+		actCode = "h"
+	case "pause", "p":
+		actCode = "p"
+	case "resume", "r":
+		actCode = "r"
+	default:
+		actCode = "s"
+	}
+
+	cleanMap := mxj.Map{
+		"-act": actCode,
+	}
+	if actCode == "s" {
+		if cleanType == "" {
+			cleanType = "auto"
+		}
+		cleanMap["-type"] = cleanType
+		speed := CleanSpeed
+		if speed == "" || speed == "Unknown" {
+			speed = "standard"
+		}
+		cleanMap["-speed"] = speed
+	}
+
 	return XMLMsg{
 		cmdName: "Clean",
 		cmdOpts: mxj.Map{
-			"clean": mxj.Map{
-				"-type":  cleanType,
-				"-speed": "normal",
-				"-act":   act,
-			},
+			"clean": cleanMap,
 		},
 	}
 }
@@ -159,6 +183,8 @@ const (
 	SOUND_CLEAN_COMPLETE    Sound = "86" // cleaning is complete returning to the charging dock
 	SOUND_LDS_MALFUNCTION   Sound = "89" // LDS malfunction please try to tap the LDS
 	SOUND_UPGRADING         Sound = "90" // I am upgrading please wait
+	SOUND_DO_NOT_COME       Sound = "98" // Do not come
+	SOUND_IM_GUNNA_COME     Sound = "99" // I'm gonna come
 )
 
 // AvailableSounds maps every mapped sound ID to its audio prompt description
@@ -195,6 +221,8 @@ var AvailableSounds = map[string]string{
 	"86": "cleaning is complete returning to the charging dock",
 	"89": "LDS malfunction please try to tap the LDS",
 	"90": "I am upgrading please wait",
+	"98": "Do not come",
+	"99": "I'm gonna come",
 }
 
 func PlaySound(sound Sound) XMLMsg {
@@ -213,9 +241,38 @@ func PlaySoundInt(num int) XMLMsg {
 
 // XML-based spot area mapping
 func PullM(msid string, mid string) XMLMsg {
+	return PullMType("sa", msid, mid)
+}
+
+func PullMType(tp, msid, mid string) XMLMsg {
 	return XMLMsg{
 		cmdName: "PullM",
-		cmdOpts: mxj.Map{"-tp": "sa", "-msid": msid, "-mid": mid},
+		cmdOpts: mxj.Map{"-id": tp + mid, "-tp": tp, "-msid": msid, "-mid": mid, "-seq": "0"},
+	}
+}
+
+// SetVirtualRestrictions sets virtual walls and no-go areas on the robot
+func SetVirtualRestrictions(msid string, walls [][4]int, zones [][8]int) XMLMsg {
+	var mList []interface{}
+	for _, w := range walls {
+		vStr := fmt.Sprintf("[%d,%d,%d,%d]", w[0], w[1], w[2], w[3])
+		mList = append(mList, mxj.Map{"-v": vStr})
+	}
+	for _, z := range zones {
+		vStr := fmt.Sprintf("[%d,%d,%d,%d,%d,%d,%d,%d]", z[0], z[1], z[2], z[3], z[4], z[5], z[6], z[7])
+		mList = append(mList, mxj.Map{"-v": vStr})
+	}
+
+	opts := mxj.Map{
+		"-tp":   "vw",
+		"-msid": msid,
+	}
+	if len(mList) > 0 {
+		opts["m"] = mList
+	}
+	return XMLMsg{
+		cmdName: "SetM",
+		cmdOpts: opts,
 	}
 }
 
@@ -232,7 +289,10 @@ var GetMapM XMLMsg = XMLMsg{
 func PullMp(pieceId int) XMLMsg {
 	return XMLMsg{
 		cmdName: "PullMP",
-		cmdOpts: mxj.Map{"-pid": pieceId},
+		cmdOpts: mxj.Map{
+			"-pid": pieceId,
+			"-id":  fmt.Sprintf("mp%02d", pieceId),
+		},
 	}
 }
 
@@ -280,7 +340,8 @@ func GetOnOff(switchType string) XMLMsg {
 	return XMLMsg{
 		cmdName: "GetOnOff",
 		cmdOpts: mxj.Map{
-			"-t": switchType,
+			"-id": fmt.Sprintf("onoff_%s", switchType),
+			"-t":  switchType,
 		},
 	}
 }
@@ -441,47 +502,66 @@ func Move(act string) XMLMsg {
 
 var CleanPause XMLMsg = XMLMsg{
 	cmdName: "Clean",
-	cmdOpts: mxj.Map{"-act": "pause"},
+	cmdOpts: mxj.Map{
+		"clean": mxj.Map{
+			"-act": "p",
+		},
+	},
 }
 
 var CleanResume XMLMsg = XMLMsg{
 	cmdName: "Clean",
-	cmdOpts: mxj.Map{"-act": "resume"},
+	cmdOpts: mxj.Map{
+		"clean": mxj.Map{
+			"-act": "r",
+		},
+	},
 }
 
 var CleanStop XMLMsg = XMLMsg{
 	cmdName: "Clean",
-	cmdOpts: mxj.Map{"-act": "stop"},
+	cmdOpts: mxj.Map{
+		"clean": mxj.Map{
+			"-act": "h",
+		},
+	},
 }
 
 // CleanSpotArea cleans specified room/spot area IDs (comma-separated, e.g. "0,1")
-func CleanSpotArea(msid, mid, roomIDs string) XMLMsg {
+// Note: Decompiled firmware (plug_medusa_plugin_wifiHandler.so @ 0x183c0) checks:
+// if (mid != NULL && p != NULL) -> aborts with "spotArea has mid and p".
+// Room cleaning (TaskType 2) requires mid="0,1" and NO "p" attribute.
+func CleanSpotArea(roomIDs string) XMLMsg {
 	return XMLMsg{
 		cmdName: "Clean",
 		cmdOpts: mxj.Map{
-			"-act":  "clean",
-			"-type": "spot_area",
 			"clean": mxj.Map{
-				"-type": "spot_area",
-				"-msid": msid,
-				"-mid":  mid,
-				"-sa":   roomIDs,
+				"-act":  "s",
+				"-type": "SpotArea",
+				"-mid":  roomIDs,
+				"-deep": "1",
 			},
 		},
 	}
 }
 
 // CleanCustomArea cleans rectangular coordinates "x1,y1,x2,y2"
+// Note: Decompiled firmware (plug_medusa_plugin_wifiHandler.so @ 0x183c0):
+// Zone cleaning (TaskType 9) requires type="SpotArea" with p="x1,y1,x2,y2" and NO "mid" attribute.
+// If type="spot" is used, the firmware treats it as single-point clean (TaskType 1) and fails navigation.
 func CleanCustomArea(p string, count int) XMLMsg {
+	deepStr := "1"
+	if count > 1 {
+		deepStr = strconv.Itoa(count)
+	}
 	return XMLMsg{
 		cmdName: "Clean",
 		cmdOpts: mxj.Map{
-			"-act":  "clean",
-			"-type": "custom",
 			"clean": mxj.Map{
-				"-type":  "custom",
-				"-p":      p,
-				"-count": strconv.Itoa(count),
+				"-act":  "s",
+				"-type": "SpotArea",
+				"-p":    p,
+				"-deep": deepStr,
 			},
 		},
 	}
@@ -490,7 +570,9 @@ func CleanCustomArea(p string, count int) XMLMsg {
 // GetCleanSum requests lifetime clean summary (count, total seconds, total area)
 var GetCleanSum XMLMsg = XMLMsg{
 	cmdName: "GetCleanSum",
-	cmdOpts: mxj.Map{},
+	cmdOpts: mxj.Map{
+		"-id": "cleansum",
+	},
 }
 
 // GetCleanLogs requests historical cleaning session logs
@@ -609,11 +691,31 @@ var GetTrM XMLMsg = XMLMsg{
 	cmdOpts: mxj.Map{},
 }
 
-func GetTr(pieceID int) XMLMsg {
+func GetTr(trid int, tf int, tt int) XMLMsg {
 	return XMLMsg{
 		cmdName: "GetTr",
 		cmdOpts: mxj.Map{
-			"-pid": strconv.Itoa(pieceID),
+			"-trid": strconv.Itoa(trid),
+			"-tf":   strconv.Itoa(tf),
+			"-tt":   strconv.Itoa(tt),
+		},
+	}
+}
+
+func RenameM(msid string, names map[string]string) XMLMsg {
+	var mList []interface{}
+	for mid, name := range names {
+		mList = append(mList, mxj.Map{
+			"-mid": mid,
+			"-n":   name,
+		})
+	}
+	return XMLMsg{
+		cmdName: "RenameM",
+		cmdOpts: mxj.Map{
+			"-tp":   "sa",
+			"-msid": msid,
+			"m":     mList,
 		},
 	}
 }
