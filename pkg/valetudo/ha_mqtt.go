@@ -221,6 +221,8 @@ func ClearOldHADiscovery(client mqtt.Client, haPrefix, sn string) {
 		fmt.Sprintf("%s/select/%s_wf/config", haPrefix, sn),
 		fmt.Sprintf("%s/number/%s_vol/config", haPrefix, sn),
 		fmt.Sprintf("%s/select/%s_snd/config", haPrefix, sn),
+		fmt.Sprintf("%s/select/ozmo_930_goto_snd/config", haPrefix),
+		fmt.Sprintf("%s/goto_sound", sn),
 	}
 	for _, top := range oldTopics {
 		client.Publish(top, 0, true, "")

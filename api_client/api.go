@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -20,8 +21,8 @@ func setupApi() {
 	r.HandleFunc("/getMapData", getMapData).Methods("GET", "HEAD")
 	r.HandleFunc("/mapGrid", handleMapGrid).Methods("GET", "HEAD")
 	r.HandleFunc("/status", getStatus).Methods("GET")
-	r.HandleFunc("/clean", handleClean).Methods("POST")
-	r.HandleFunc("/charge", handleCharge).Methods("POST")
+	r.HandleFunc("/clean", handleClean).Methods("POST", "GET")
+	r.HandleFunc("/charge", handleCharge).Methods("POST", "GET")
 	r.HandleFunc("/setVolume", handleSetVolume).Methods("POST")
 	r.HandleFunc("/setWater", handleSetWater).Methods("POST")
 	r.HandleFunc("/locate", handleLocate).Methods("POST", "GET")
@@ -37,6 +38,7 @@ func setupApi() {
 	r.HandleFunc("/virtualRestrictions", handleVirtualRestrictions).Methods("GET", "POST")
 	r.HandleFunc("/rooms/rename", handleRenameRooms).Methods("POST")
 	r.HandleFunc("/silentGoto", handleSilentGoto).Methods("POST", "GET")
+	r.HandleFunc("/goTo", handleGoTo).Methods("POST", "GET")
 	http.Handle("/", r)
 	go http.ListenAndServe(":8000", r)
 }
@@ -107,6 +109,14 @@ func handleMapGrid(res http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	isDocked := ChargingState == "SlotCharging" || ChargingState == "Charging"
+	poseValid := RobotPoseValid
+	if isDocked {
+		pixRobotX = pixChargerX
+		pixRobotY = pixChargerY
+		poseValid = true
+	}
+
 	restrictionsLock.Lock()
 	restrs := make([]VirtualRestriction, len(DiscoveredRestrictions))
 	copy(restrs, DiscoveredRestrictions)
@@ -133,7 +143,7 @@ func handleMapGrid(res http.ResponseWriter, req *http.Request) {
 		CropMaxY:            maxY,
 		RobotPixelX:         pixRobotX,
 		RobotPixelY:         pixRobotY,
-		PoseValid:           RobotPoseValid,
+		PoseValid:           poseValid,
 		ChargerPixelX:       pixChargerX,
 		ChargerPixelY:       pixChargerY,
 		RobotAngle:          RobotAngle,
@@ -326,6 +336,17 @@ func getStatus(res http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	poseValid := RobotPoseValid
+	posX := RobotPosX
+	posY := RobotPosY
+	if ChargingState == "SlotCharging" || ChargingState == "Charging" {
+		pixelRobotX = pixelChargerX
+		pixelRobotY = pixelChargerY
+		posX = ChargerPosX
+		posY = ChargerPosY
+		poseValid = true
+	}
+
 	response := StatusResponse{
 		BatteryLevel:         BatteryLevel,
 		ChargingState:        ChargingState,
@@ -346,14 +367,14 @@ func getStatus(res http.ResponseWriter, req *http.Request) {
 		DustCaseHeapLifeSpan: DustCaseHeapLifeSpan,
 		DiscoveredRooms:      DiscoveredRooms,
 		Errors:               Errors,
-		RobotPosX:            RobotPosX,
-		RobotPosY:            RobotPosY,
+		RobotPosX:            posX,
+		RobotPosY:            posY,
 		RobotAngle:           RobotAngle,
 		ChargerPosX:          ChargerPosX,
 		ChargerPosY:          ChargerPosY,
 		RobotPixelX:          pixelRobotX,
 		RobotPixelY:          pixelRobotY,
-		PoseValid:            RobotPoseValid,
+		PoseValid:            poseValid,
 		ChargerPixelX:        pixelChargerX,
 		ChargerPixelY:        pixelChargerY,
 		CropMinX:             MapCropMinX,
@@ -569,6 +590,115 @@ func handleSilentGoto(res http.ResponseWriter, req *http.Request) {
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(http.StatusOK)
 	res.Write([]byte(fmt.Sprintf(`{"status":"success","silent_goto":%v}`, enable)))
+}
+
+func handleGoTo(res http.ResponseWriter, req *http.Request) {
+	act := req.URL.Query().Get("act")
+	if act == "" {
+		if req.URL.Query().Get("stop") == "1" || req.URL.Query().Get("stop") == "true" {
+			act = "stop"
+		} else {
+			act = "start"
+		}
+	}
+
+	robotIP := robotIPFlag
+	if robotIP == "" {
+		robotIP = os.Getenv("ROBOT_IP")
+	}
+	if robotIP == "" && activeXmppBot != nil {
+		robotIP = activeXmppBot.RemoteIP()
+	}
+	if robotIP == "" {
+		log.Printf("[GOTO] Error: ROBOT_IP is required (set ROBOT_IP env var or -robot-ip flag)")
+		http.Error(res, `{"status":"error","message":"ROBOT_IP is required (set ROBOT_IP env var or -robot-ip flag)"}`, http.StatusBadRequest)
+		return
+	}
+
+	res.Header().Set("Content-Type", "application/json")
+
+	if act == "stop" {
+		log.Printf("[GOTO] Stopping native Go-To on robot (%s)", robotIP)
+		stopped := false
+		// Try TCP 2026 first (direct to libsilentgoto native hook)
+		if conn, err := net.DialTimeout("tcp", net.JoinHostPort(robotIP, "2026"), 1*time.Second); err == nil {
+			_ = conn.SetDeadline(time.Now().Add(1 * time.Second))
+			_, _ = conn.Write([]byte("STOP\n"))
+			conn.Close()
+			stopped = true
+		}
+		// Also touch /tmp/goto_stop via Telnet as safety fallback
+		if conn, err := net.DialTimeout("tcp", net.JoinHostPort(robotIP, "23"), 2*time.Second); err == nil {
+			defer conn.Close()
+			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+			time.Sleep(50 * time.Millisecond)
+			_, _ = conn.Write([]byte("touch /tmp/goto_stop\nrm -f /tmp/silent_goto\n"))
+			stopped = true
+		}
+		if stopped {
+			res.WriteHeader(http.StatusOK)
+			res.Write([]byte(`{"status":"success","action":"stopped"}`))
+		} else {
+			http.Error(res, `{"status":"error","message":"failed to connect to robot"}`, http.StatusInternalServerError)
+		}
+		return
+	}
+
+	xStr := req.URL.Query().Get("x")
+	yStr := req.URL.Query().Get("y")
+	if xStr == "" || yStr == "" {
+		http.Error(res, `{"status":"error","message":"x and y coordinates are required"}`, http.StatusBadRequest)
+		return
+	}
+	x, errX := strconv.Atoi(xStr)
+	y, errY := strconv.Atoi(yStr)
+	if errX != nil || errY != nil {
+		http.Error(res, `{"status":"error","message":"invalid x or y coordinate format"}`, http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("[GOTO] Initiating native Go-To navigation to (%d, %d) on robot (%s)", x, y, robotIP)
+
+	started := false
+	// Try TCP 2026 first (direct to libsilentgoto native hook)
+	if conn, err := net.DialTimeout("tcp", net.JoinHostPort(robotIP, "2026"), 1*time.Second); err == nil {
+		_ = conn.SetDeadline(time.Now().Add(1 * time.Second))
+		cmd := fmt.Sprintf("GOTO %d %d\n", x, y)
+		if _, err := conn.Write([]byte(cmd)); err == nil {
+			var respBuf [128]byte
+			n, _ := conn.Read(respBuf[:])
+			if n > 0 {
+				log.Printf("[GOTO] Robot TCP 2026 response: %s", strings.TrimSpace(string(respBuf[:n])))
+			}
+			started = true
+		}
+		conn.Close()
+	}
+
+	// Fallback via Telnet (writes /tmp/goto_target trigger)
+	if !started {
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort(robotIP, "23"), 2*time.Second)
+		if err != nil {
+			log.Printf("[GOTO] Telnet dial error to %s: %v", robotIP, err)
+			http.Error(res, fmt.Sprintf(`{"status":"error","message":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+		time.Sleep(50 * time.Millisecond)
+		cmd := fmt.Sprintf("echo \"%d %d\" > /tmp/goto_target\n", x, y)
+		_, _ = conn.Write([]byte(cmd))
+		log.Printf("[GOTO] Wrote target to /tmp/goto_target via Telnet on %s", robotIP)
+		started = true
+	}
+
+	res.WriteHeader(http.StatusOK)
+	json.NewEncoder(res).Encode(map[string]interface{}{
+		"status": "success",
+		"action": "start",
+		"x":      x,
+		"y":      y,
+	})
 }
 
 

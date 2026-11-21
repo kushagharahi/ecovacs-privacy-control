@@ -32,12 +32,15 @@ var (
 	activeGoToLock   sync.Mutex
 )
 
-func cancelActiveGoTo() {
+func cancelActiveGoTo(httpCli *http.Client) {
 	activeGoToLock.Lock()
 	defer activeGoToLock.Unlock()
 	if activeGoToCancel != nil {
 		activeGoToCancel()
 		activeGoToCancel = nil
+		if httpCli != nil {
+			callAPI(httpCli, "/silentGoto?enable=0")
+		}
 	}
 }
 
@@ -148,7 +151,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 	c.Subscribe(fmt.Sprintf("%s/command", topicPrefix), 0, func(_ mqtt.Client, m mqtt.Message) {
 		cmd := string(m.Payload())
 		log.Printf("[CMD] Received vacuum command: %s", cmd)
-		cancelActiveGoTo()
+		cancelActiveGoTo(httpCli)
 		switch cmd {
 		case "start", "clean":
 			callAPI(httpCli, "/clean?act=start&type=auto")
@@ -265,6 +268,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 		if err == nil {
 			log.Printf("[CMD] Play sound prompt ID %d", soundID)
 			callAPI(httpCli, fmt.Sprintf("/playSound?sid=%d", soundID))
+			c.Publish(fmt.Sprintf("%s/last_sound", topicPrefix), 0, true, val)
 		}
 	})
 
@@ -279,7 +283,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 
 	// Valetudo Map Capabilities: Room/Segment Cleaning
 	handleSegmentClean := func(_ mqtt.Client, m mqtt.Message) {
-		cancelActiveGoTo()
+		cancelActiveGoTo(httpCli)
 		lastSegmentCmdLock.Lock()
 		if time.Since(lastSegmentCmdTime) < 1*time.Second {
 			lastSegmentCmdLock.Unlock()
@@ -302,7 +306,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 
 	// Valetudo Map Capabilities: Zone Cleaning
 	handleZoneClean := func(_ mqtt.Client, m mqtt.Message) {
-		cancelActiveGoTo()
+		cancelActiveGoTo(httpCli)
 		lastZoneCmdLock.Lock()
 		if time.Since(lastZoneCmdTime) < 1*time.Second {
 			lastZoneCmdLock.Unlock()
@@ -373,7 +377,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 
 	// Valetudo Map Capabilities: GoTo Pin Target
 	handleGoTo := func(_ mqtt.Client, m mqtt.Message) {
-		cancelActiveGoTo()
+		cancelActiveGoTo(httpCli)
 		lastGoToCmdLock.Lock()
 		if time.Since(lastGoToCmdTime) < 1*time.Second {
 			lastGoToCmdLock.Unlock()
@@ -422,7 +426,6 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 			callAPI(httpCli, fmt.Sprintf("/clean?act=s&type=custom&p=%d,%d,%d,%d", rx-250, ry-250, rx+250, ry+250))
 
 			// Background arrival watcher: monitors robot's physical position via /status telemetry
-			// When within 450mm of target, stops the clean task and halts motion so the robot parks
 			go func(ctx context.Context, targetX, targetY int) {
 				ticker := time.NewTicker(500 * time.Millisecond)
 				defer ticker.Stop()
@@ -449,13 +452,27 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 						}
 						resp.Body.Close()
 
+						// Calculate current robot physical coordinate in mm
+						currX := (st.RobotPosX - 400) * 50
+						currY := (st.RobotPosY - 400) * 50
+						chargerX := (st.ChargerPosX - 400) * 50
+						chargerY := (st.ChargerPosY - 400) * 50
+						dxC := float64(currX - chargerX)
+						dyC := float64(currY - chargerY)
+						distFromDock := math.Sqrt(dxC*dxC + dyC*dyC)
+
+						dx := float64(targetX - currX)
+						dy := float64(targetY - currY)
+						dist := math.Sqrt(dx*dx + dy*dy)
+
 						// Check if robot has left dock and started transit
 						if !hasStartedMoving {
-							if st.ChargingState != "SlotCharging" && st.CleanSpeed != "stop" && st.CleanSpeed != "idle" {
+							if (st.ChargingState != "SlotCharging" && st.ChargingState != "Charging") || distFromDock > 250 {
 								hasStartedMoving = true
 								log.Printf("[GOTO] Robot has disengaged dock/idle and begun moving towards (%d, %d)", targetX, targetY)
-							} else if time.Since(startTime) > 12*time.Second {
-								log.Printf("[GOTO] Robot failed to begin movement within 12s (state=%s, speed=%s), exiting watcher", st.ChargingState, st.CleanSpeed)
+							} else if time.Since(startTime) > 20*time.Second {
+								log.Printf("[GOTO] Robot failed to disengage dock within 20s (state=%s), exiting watcher", st.ChargingState)
+								callAPI(httpCli, "/clean?act=stop")
 								callAPI(httpCli, "/silentGoto?enable=0")
 								return
 							} else {
@@ -463,13 +480,6 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 								continue
 							}
 						}
-
-						// Calculate current robot physical coordinate in mm
-						currX := (st.RobotPosX - 400) * 50
-						currY := (st.RobotPosY - 400) * 50
-						dx := float64(targetX - currX)
-						dy := float64(targetY - currY)
-						dist := math.Sqrt(dx*dx + dy*dy)
 
 						if time.Since(lastLogTime) >= 1500*time.Millisecond {
 							log.Printf("[GOTO] Tracking: Robot at (%d, %d), Target (%d, %d), Dist=%.0fmm, State=%s", currX, currY, targetX, targetY, dist, st.ChargingState)
@@ -490,8 +500,8 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 						}
 
 						// If robot was stopped or returned to dock by another user action AFTER moving started
-						if st.CleanSpeed == "stop" || st.CleanSpeed == "idle" || st.ChargingState == "SlotCharging" {
-							log.Printf("[GOTO] Robot stopped externally (speed=%s, state=%s), ending watcher", st.CleanSpeed, st.ChargingState)
+						if hasStartedMoving && (st.ChargingState == "SlotCharging" || st.CleanSpeed == "stop" || st.CleanSpeed == "idle") {
+							log.Printf("[GOTO] Robot docked or stopped externally (state=%s, speed=%s), ending watcher", st.ChargingState, st.CleanSpeed)
 							callAPI(httpCli, "/silentGoto?enable=0")
 							return
 						}
@@ -700,6 +710,14 @@ func startMapLoop(c mqtt.Client, topicPrefix string, httpCli *http.Client, stopC
 				lastCropMinX = mapGrid.CropMinX
 				lastCropMinY = mapGrid.CropMinY
 				cropOffsetLock.Unlock()
+
+				if curStatus.ChargingState == "SlotCharging" || curStatus.ChargingState == "Charging" {
+					mapGrid.RobotPixelX = mapGrid.ChargerPixelX
+					mapGrid.RobotPixelY = mapGrid.ChargerPixelY
+					curStatus.RobotPixelX = curStatus.ChargerPixelX
+					curStatus.RobotPixelY = curStatus.ChargerPixelY
+					curStatus.PoseValid = true
+				}
 
 				vMap = valetudo.ExportGridToValetudoMap(
 					mapGrid.Grid,

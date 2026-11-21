@@ -1,8 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	mxj "github.com/clbanning/mxj/v2"
 )
@@ -146,6 +150,13 @@ func GetBrushLifeSpanHelper() XMLMsg {
 	return GetLifeSpan("Brush")
 }
 
+// GoToPoint commands the robot to navigate to (x, y) coordinates using native taskGoto
+// Handled natively on the robot via libsilentgoto.so /goTo endpoint
+type GoToCmd struct {
+	X int
+	Y int
+}
+
 
 // PlaySound makes the robot play a specific audio clip
 type Sound string
@@ -183,12 +194,10 @@ const (
 	SOUND_CLEAN_COMPLETE    Sound = "86" // cleaning is complete returning to the charging dock
 	SOUND_LDS_MALFUNCTION   Sound = "89" // LDS malfunction please try to tap the LDS
 	SOUND_UPGRADING         Sound = "90" // I am upgrading please wait
-	SOUND_DO_NOT_COME       Sound = "98" // Do not come
-	SOUND_IM_GUNNA_COME     Sound = "99" // I'm gonna come
 )
 
-// AvailableSounds maps every mapped sound ID to its audio prompt description
-var AvailableSounds = map[string]string{
+// StockSounds maps every factory firmware sound ID to its official audio prompt description
+var StockSounds = map[string]string{
 	"0":  "Boot up chime",
 	"3":  "i am suspended",
 	"4":  "Please check the driving wheels",
@@ -221,8 +230,94 @@ var AvailableSounds = map[string]string{
 	"86": "cleaning is complete returning to the charging dock",
 	"89": "LDS malfunction please try to tap the LDS",
 	"90": "I am upgrading please wait",
-	"98": "Do not come",
-	"99": "I'm gonna come",
+}
+
+// AvailableSounds maps all currently available sounds (Stock + dynamically discovered/configured custom sounds)
+var AvailableSounds = make(map[string]string)
+
+func init() {
+	InitSounds()
+}
+
+// InitSounds populates AvailableSounds with StockSounds plus any dynamically discovered custom sounds
+func InitSounds() {
+	AvailableSounds = make(map[string]string)
+	for k, v := range StockSounds {
+		AvailableSounds[k] = v
+	}
+
+	// 1. Load from CUSTOM_SOUNDS environment variable (JSON or "id:name,id:name")
+	if env := os.Getenv("CUSTOM_SOUNDS"); env != "" {
+		var jsonMap map[string]string
+		if err := json.Unmarshal([]byte(env), &jsonMap); err == nil {
+			for id, name := range jsonMap {
+				AvailableSounds[id] = name
+			}
+		} else {
+			// Try comma-separated format: "98:Do not come,99:I'm gonna come"
+			pairs := strings.Split(env, ",")
+			for _, pair := range pairs {
+				parts := strings.SplitN(strings.TrimSpace(pair), ":", 2)
+				if len(parts) == 2 {
+					AvailableSounds[strings.TrimSpace(parts[0])] = strings.TrimSpace(parts[1])
+				}
+			}
+		}
+	}
+
+	// 2. Load from custom_sounds.json if present (in working dir, CUSTOM_SOUNDS_FILE, or /data/custom_sounds.json)
+	soundFile := os.Getenv("CUSTOM_SOUNDS_FILE")
+	if soundFile == "" {
+		if _, err := os.Stat("custom_sounds.json"); err == nil {
+			soundFile = "custom_sounds.json"
+		} else if _, err := os.Stat("/data/custom_sounds.json"); err == nil {
+			soundFile = "/data/custom_sounds.json"
+		}
+	}
+	if soundFile != "" {
+		if data, err := os.ReadFile(soundFile); err == nil {
+			var fileMap map[string]string
+			if err := json.Unmarshal(data, &fileMap); err == nil {
+				for id, name := range fileMap {
+					AvailableSounds[id] = name
+				}
+			}
+		}
+	}
+
+	// 3. Scan CUSTOM_SOUNDS_DIR or /data/music/EN for descriptive filenames like "98_do_not_come.ogg" or "99.ogg"
+	soundDir := os.Getenv("CUSTOM_SOUNDS_DIR")
+	if soundDir == "" {
+		if _, err := os.Stat("/data/music/EN"); err == nil {
+			soundDir = "/data/music/EN"
+		}
+	}
+	if soundDir != "" {
+		if entries, err := os.ReadDir(soundDir); err == nil {
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".ogg") {
+					continue
+				}
+				base := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+				// If named "98_Do_not_come", extract ID 98 and title "Do not come"
+				if idx := strings.IndexAny(base, "_- "); idx > 0 {
+					id := base[:idx]
+					name := strings.Trim(base[idx+1:], "_- ")
+					name = strings.ReplaceAll(name, "_", " ")
+					if _, err := strconv.Atoi(id); err == nil && name != "" {
+						AvailableSounds[id] = name
+						continue
+					}
+				}
+				// If named simply "98.ogg" and not in stock sounds, add placeholder if not already registered
+				if _, err := strconv.Atoi(base); err == nil {
+					if _, exists := AvailableSounds[base]; !exists {
+						AvailableSounds[base] = fmt.Sprintf("Custom Sound %s", base)
+					}
+				}
+			}
+		}
+	}
 }
 
 func PlaySound(sound Sound) XMLMsg {

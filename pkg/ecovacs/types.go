@@ -1,7 +1,13 @@
 package ecovacs
 
 import (
+	"encoding/json"
+	"fmt"
 	"image/color"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 // StatusResponse represents the canonical REST and telemetry status payload
@@ -110,11 +116,10 @@ const (
 	CLEANING_IS_COMPLETE_RETURNING_TO_THE_CHARGING_DOCK Sound = 86
 	LDS_MALFUNCTION_PLEASE_TRY_TO_TAP_THE_LDS Sound = 89
 	I_AM_UPGRADING_PLEASE_WAIT            Sound = 90
-	DO_NOT_COME                           Sound = 98
-	IM_GUNNA_COME                         Sound = 99
 )
 
-var AvailableSounds = map[Sound]string{
+// StockSounds contains the factory firmware sound IDs and official descriptions
+var StockSounds = map[Sound]string{
 	BOOT_UP:                               "Boot up chime",
 	I_AM_SUSPENDED:                        "i am suspended",
 	PLEASE_CHECK_THE_DRIVING_WHEELS:       "Please check the driving wheels",
@@ -147,8 +152,98 @@ var AvailableSounds = map[Sound]string{
 	CLEANING_IS_COMPLETE_RETURNING_TO_THE_CHARGING_DOCK: "cleaning is complete returning to the charging dock",
 	LDS_MALFUNCTION_PLEASE_TRY_TO_TAP_THE_LDS: "LDS malfunction please try to tap the LDS",
 	I_AM_UPGRADING_PLEASE_WAIT:            "I am upgrading please wait",
-	DO_NOT_COME:                           "Do not come",
-	IM_GUNNA_COME:                         "I'm gonna come",
+}
+
+// AvailableSounds maps all currently available sounds (Stock + dynamically discovered/configured custom sounds)
+var AvailableSounds = make(map[Sound]string)
+
+func init() {
+	InitSounds()
+}
+
+// InitSounds populates AvailableSounds with StockSounds plus any dynamically discovered custom sounds
+func InitSounds() {
+	AvailableSounds = make(map[Sound]string)
+	for k, v := range StockSounds {
+		AvailableSounds[k] = v
+	}
+
+	// 1. Load from CUSTOM_SOUNDS environment variable (JSON or "id:name,id:name")
+	if env := os.Getenv("CUSTOM_SOUNDS"); env != "" {
+		var jsonMap map[string]string
+		if err := json.Unmarshal([]byte(env), &jsonMap); err == nil {
+			for idStr, name := range jsonMap {
+				if idNum, err := strconv.Atoi(idStr); err == nil {
+					AvailableSounds[Sound(idNum)] = name
+				}
+			}
+		} else {
+			pairs := strings.Split(env, ",")
+			for _, pair := range pairs {
+				parts := strings.SplitN(strings.TrimSpace(pair), ":", 2)
+				if len(parts) == 2 {
+					if idNum, err := strconv.Atoi(strings.TrimSpace(parts[0])); err == nil {
+						AvailableSounds[Sound(idNum)] = strings.TrimSpace(parts[1])
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Load from custom_sounds.json if present
+	soundFile := os.Getenv("CUSTOM_SOUNDS_FILE")
+	if soundFile == "" {
+		if _, err := os.Stat("custom_sounds.json"); err == nil {
+			soundFile = "custom_sounds.json"
+		} else if _, err := os.Stat("/data/custom_sounds.json"); err == nil {
+			soundFile = "/data/custom_sounds.json"
+		}
+	}
+	if soundFile != "" {
+		if data, err := os.ReadFile(soundFile); err == nil {
+			var fileMap map[string]string
+			if err := json.Unmarshal(data, &fileMap); err == nil {
+				for idStr, name := range fileMap {
+					if idNum, err := strconv.Atoi(idStr); err == nil {
+						AvailableSounds[Sound(idNum)] = name
+					}
+				}
+			}
+		}
+	}
+
+	// 3. Scan CUSTOM_SOUNDS_DIR or /data/music/EN for descriptive filenames like "98_do_not_come.ogg"
+	soundDir := os.Getenv("CUSTOM_SOUNDS_DIR")
+	if soundDir == "" {
+		if _, err := os.Stat("/data/music/EN"); err == nil {
+			soundDir = "/data/music/EN"
+		}
+	}
+	if soundDir != "" {
+		if entries, err := os.ReadDir(soundDir); err == nil {
+			for _, entry := range entries {
+				if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".ogg") {
+					continue
+				}
+				base := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+				if idx := strings.IndexAny(base, "_- "); idx > 0 {
+					idStr := base[:idx]
+					name := strings.Trim(base[idx+1:], "_- ")
+					name = strings.ReplaceAll(name, "_", " ")
+					if idNum, err := strconv.Atoi(idStr); err == nil && name != "" {
+						AvailableSounds[Sound(idNum)] = name
+						continue
+					}
+				}
+				if idNum, err := strconv.Atoi(base); err == nil {
+					snd := Sound(idNum)
+					if _, exists := AvailableSounds[snd]; !exists {
+						AvailableSounds[snd] = fmt.Sprintf("Custom Sound %d", idNum)
+					}
+				}
+			}
+		}
+	}
 }
 
 type MapData byte
