@@ -1,7 +1,7 @@
 # ecovacs-privacy-control
 Privacy first API control for Ecovacs MQTT based vaccums -- tested with Ecovacs ~~Deebot 900/901 series and~~ OZMO 930 _only_
 
-Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local API. :check:
+Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local API that runs completely on the robot, no external services/server needed.
 
 > [!WARNING]
 > There is a lot of AI slop in this repo. Take a backup of your robots data before you start messing with it <insert how to do the backup>
