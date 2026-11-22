@@ -27,6 +27,7 @@ All symbol addresses, virtual memory offsets, decompiled C pseudocode, ARM disas
    - [C. Motor Mode Dispatch `FUN_00021ed4` (`0x21ed4`)](#c-motor-mode-dispatch-fun_00021ed4-0x21ed4)
    - [D. Baseline & Carpet Boost Motor Speeds (`0x2e6e8`)](#d-baseline--carpet-boost-motor-speeds-0x2e6e8)
    - [E. Microcontroller UART Motor Speed Framing (`0x2e528`)](#e-microcontroller-uart-motor-speed-framing-0x2e528)
+   - [F. Sensor Telemetry & Safety Cutoff Engine (`MdsMmiMotorProcess` @ `0x2ea68`)](#f-sensor-telemetry--safety-cutoff-engine-mdsmmimotorprocess--0x2ea68)
 5. [Native Go-To Architecture & Point Transit (`TASK_GOPT`)](#5-native-go-to-architecture--point-transit-task_gopt)
    - [A. Element Registration & Class Definition (`0x4f128`)](#a-element-registration--class-definition-0x4f128)
    - [B. Decompiled `TASK_GOPT` Start Routine (`0x1af60`)](#b-decompiled-task_gopt-start-routine-0x1af60)
@@ -64,6 +65,8 @@ All symbol addresses, virtual memory offsets, decompiled C pseudocode, ARM disas
     - [A. Injection Architecture (`LD_PRELOAD`)](#a-injection-architecture-ld_preload)
     - [B. Silent Transit Hook Flowchart](#b-silent-transit-hook-flowchart)
     - [C. Map Preservation Hook Flowchart](#c-map-preservation-hook-flowchart)
+12. [Verification & Reference Checksum Summary](#12-verification--reference-checksum-summary)
+13. [Firmware Batch Decompilation Catalog & Source Manifest](#13-firmware-batch-decompilation-catalog--source-manifest)
 
 ---
 
@@ -260,56 +263,50 @@ int MDSElemCallProcess(MDSElem *src, MDSElem *dst, const char *msg_type, void *p
 
 Command handling occurs inside `plug_medusa_plugin_wifiHandler.so`. Incoming XMPP IQ stanzas containing `<ctl td="...">` queries are routed through a central dispatcher table.
 
-### A. Command Dispatch Table (`getCtlHandlerFromTdStz` @ `0x1c224`)
+### A. Command Dispatch Table (`getCtlHandlerFromTdStz` @ `0x1c224`, Table at `0x11b50`)
 
-The command dispatcher matches the XML attribute `td` against a static table of 44 registered handler records (each 8 bytes: `4 bytes char* name, 4 bytes function_ptr`):
+The command dispatcher matches the XML attribute `td` against a static table of 38 registered handler records (located at binary offset `0x11b50` in `plug_medusa_plugin_wifiHandler.so`, each 8 bytes: `4 bytes char* name, 4 bytes function_ptr`). All 38 command handlers have been mapped and decompiled from `plug_medusa_plugin_wifiHandler.so`:
 
 | Index | Command (`td`) | Handler Address | Description |
-|:---:|:---|:---:|:---|
-| 1 | `FactoryReset` | `0x157d0` | Reset flash settings to defaults |
-| 2 | `GetBatteryInfo` | `0x15a30` | Return battery state of charge |
-| 3 | `Move` | `0x165d0` | Directional manual drive |
-| 4 | `GetChargeState` | `0x16d90` | Query charging state |
-| 5 | `Charge` | `0x170c0` | Order return to dock (`goBack`) |
-| 6 | `GetLifeSpan` | `0x17400` | Query brush/filter wear percentages |
-| 7 | `ResetLifeSpan` | `0x17820` | Reset consumable wear counters |
-| 8 | `GetCleanLogs` | `0x17ad0` | Fetch past clean history entries |
-| 9 | `EmptyCleanLog` | `0x17e30` | Clear clean logs |
-| 10 | `GetLogs` | `0x17fc0` | Query event logs |
-| 11 | `EmptyLog` | `0x18140` | Clear event logs |
-| 12 | `GetSched` | `0x182c0` | Query cleaning timer schedules |
-| 13 | `AddSched` | `0x182d0` | Add cleaning timer schedule |
-| 14 | `ModSched` | `0x182e0` | Modify cleaning timer schedule |
-| 15 | `DelSched` | `0x182f0` | Delete cleaning timer schedule |
-| 16 | `GetError` | `0x18300` | Fetch active error codes |
-| 17 | `Clean` | `0x183c0` | Clean task controller (Auto, Spot, Zone, Rooms) |
-| 18 | `GetCleanState` | `0x18964` | Query active clean state and hardcoded speed |
-| 19 | `GetCleanSum` | `0x18c40` | Total cleaned area and duration statistics |
-| 20 | `GetWaterBoxInfo` | `0x18ec0` | Query mopping reservoir attachment |
-| 21 | `GetChargerPos` | `0x19030` | Query charging station position |
-| 22 | `GetPos` | `0x192a0` | Query robot SLAM coordinates |
-| 23 | `SetMapAutoReport` | `0x19510` | Enable live map push notifications |
-| 24 | `ClearMap` | `0x19740` | Erase SLAM map from RAM and flash |
-| 25 | `GetMapSt` | `0x19a00` | Query SLAM map status |
-| 26 | `GetMapM` | `0x19c50` | Request map piece metadata |
-| 27 | `PullMP` | `0x1a0f0` | Request specific map tile LZMA chunk |
-| 28 | `RecoverMap` | `0x1a478` | **STUB**: Echoes `ret="ok"` without touching SLAM |
-| 29 | `IfHaveMap` | `0x1a534` | **STUB**: Returns cached map status |
-| 30 | `GetTrM` | `0x1a710` | Request trajectory piece metadata |
-| 31 | `GetTr` | `0x1a9e0` | Request trajectory coordinate points |
-| 32 | `GetMapSet` | `0x1ad00` | Query virtual walls and spot areas |
-| 33 | `PullM` | `0x1b200` | Pull complete map |
-| 34 | `DelM` | `0x1b5a0` | Delete map partition |
-| 35 | `RenameM` | `0x1b8b0` | Rename spot area room |
-| 36 | `AddM` | `0x1bbc0` | Add virtual wall barrier |
-| 37 | `SetM` | `0x1bd00` | Update map properties |
-| 38 | `GetSleepStatus` | `0x1be50` | Query sleep state |
-| 39 | `GetBlockTime` | `0x1bfa0` | Query DND quiet hours |
-| 40 | `SetBlockTime` | `0x1bfb0` | Configure DND quiet hours |
-| 41 | `GetOnOff` | `0x1bfc0` | Query feature switches |
-| 42 | `SetOnOff` | `0x1c050` | Toggle carpet boost or continuous clean |
-| 43 | `SetWaterPermeability` | `0x1c170` | Set OZMO mopping water flow rate (1–4) |
-| 44 | `GetWaterPermeability` | `0x1c1e0` | Query active water flow rate |
+|:---:|:---|:---:|:---|:---|
+| 1 | `ResetLifeSpan` | `0x16ea4` | `0x16ea4` | Reset consumable wear counters |
+| 2 | `GetCleanLogs` | `0x16fd4` | `0x16fd4` | Fetch past clean history entries |
+| 3 | `EmptyCleanLog` | `0x173c8` | `0x173c8` | Clear clean logs |
+| 4 | `GetLogs` | `0x17498` | `0x17498` | Query event logs |
+| 5 | `EmptyLog` | `0x175e0` | `0x175e0` | Clear event logs |
+| 6 | `GetSched` | `0x1769c` | `0x1769c` | Query cleaning timer schedules |
+| 7 | `AddSched` | `0x178cc` | `0x178cc` | Add cleaning timer schedule |
+| 8 | `ModSched` | `0x17c90` | `0x17c90` | Modify cleaning timer schedule |
+| 9 | `DelSched` | `0x18074` | `0x18074` | Delete cleaning timer schedule |
+| 10 | `GetError` | `0x182b8` | `0x182b8` | Fetch active error codes |
+| 11 | `Clean` | `0x183c0` | `0x183c0` | Clean task controller (Auto, Spot, Zone, Rooms) |
+| 12 | `GetCleanState` | `0x18964` | `0x18964` | Query active clean state and hardcoded speed |
+| 13 | `GetCleanSum` | `0x19034` | `0x19034` | Total cleaned area and duration statistics |
+| 14 | `GetWaterBoxInfo` | `0x191b8` | `0x191b8` | Query mopping reservoir attachment |
+| 15 | `GetChargerPos` | `0x192c4` | `0x192c4` | Query charging station position |
+| 16 | `GetPos` | `0x194b8` | `0x194b8` | Query robot SLAM coordinates |
+| 17 | `SetMapAutoReport` | `0x1971c` | `0x1971c` | Enable live map push notifications |
+| 18 | `ClearMap` | `0x1982c` | `0x1982c` | Erase SLAM map from RAM and flash |
+| 19 | `GetMapSt` | `0x19984` | `0x19984` | Query SLAM map status |
+| 20 | `GetMapM` | `0x19b30` | `0x19b30` | Request map piece metadata |
+| 21 | `PullMP` | `0x1a0c8` | `0x1a0c8` | Request specific map tile LZMA chunk |
+| 22 | `RecoverMap` | `0x1a478` | `0x1a478` | **STUB**: Echoes `ret="ok"` without touching SLAM |
+| 23 | `IfHaveMap` | `0x1a534` | `0x1a534` | **STUB**: Returns cached map status |
+| 24 | `GetTrM` | `0x1a5e0` | `0x1a5e0` | Request trajectory piece metadata |
+| 25 | `GetTr` | `0x1a728` | `0x1a728` | Request trajectory coordinate points |
+| 26 | `GetMapSet` | `0x1a998` | `0x1a998` | Query virtual walls and spot areas |
+| 27 | `PullM` | `0x1acbc` | `0x1acbc` | Pull complete map |
+| 28 | `DelM` | `0x1af40` | `0x1af40` | Delete map partition |
+| 29 | `RenameM` | `0x1b094` | `0x1b094` | Rename spot area room |
+| 30 | `AddM` | `0x1b260` | `0x1b260` | Add virtual wall barrier |
+| 31 | `SetM` | `0x1b3c8` | `0x1b3c8` | Update map properties |
+| 32 | `GetSleepStatus` | `0x1b6ec` | `0x1b6ec` | Query sleep state |
+| 33 | `GetBlockTime` | `0x1b7f8` | `0x1b7f8` | Query DND quiet hours |
+| 34 | `SetBlockTime` | `0x1b9e4` | `0x1b9e4` | Configure DND quiet hours |
+| 35 | `GetOnOff` | `0x1bb74` | `0x1bb74` | Query feature switches |
+| 36 | `SetOnOff` | `0x1bdb4` | `0x1bdb4` | Toggle carpet boost or continuous clean |
+| 37 | `SetWaterPermeability` | `0x1bf60` | `0x1bf60` | Set OZMO mopping water flow rate (1–4) |
+| 38 | `GetWaterPermeability` | `0x1c07c` | `0x1c07c` | Query active water flow rate |
 
 ### B. Decompiled `Clean` Handler (`0x183c0`)
 
@@ -555,13 +552,72 @@ Hardware motor speed registers configured inside `plug_mmi_periph.so` at address
 
 ### E. Microcontroller UART Motor Speed Framing (`0x2e528`)
 
-In `MdsMmiMotorElemCastMotorSetMmiMsg` (`0x2e528`), the motor target registers are assembled into an 18-byte binary frame prefixed with `'M'` (`0x4D`) and `'A'` (`0x41`), and transmitted over `/dev/ttyS0` (115,200 baud) to the STM32 peripheral microcontroller:
+In `MdsMmiMotorElemCastMotorSetMmiMsg` (`0x2e528`), the motor target registers are assembled into an 18-byte binary frame prefixed with `'M'` (`0x4D`) and `'A'` (`0x41`), and transmitted over `/dev/ttyS0` (115,200 baud) to the STM32 peripheral microcontroller via Medusa IPC `"SC"`:
 - Byte 0: `0x4D` ('M')
 - Byte 1: `0x41` ('A')
-- Bytes 2–3: Main roller brush target RPM (uint16_t Little-Endian)
-- Bytes 4–5: Dual side brush target RPM (uint16_t)
-- Bytes 6–7: Suction fan motor target RPM (uint16_t: `11000` or `15000`)
-- Bytes 8–9: Mopping water pump flow rate
+- Bytes 2–3: Main roller brush target RPM (uint16_t Little-Endian: 99 PWM)
+- Bytes 4–5: Dual side brush target RPM (uint16_t: 100 PWM)
+- Bytes 6–7: Suction fan motor target RPM (uint16_t: `11000` baseline or `15000` carpet boost)
+- Bytes 8–9: Mopping water pump flow rate (16-bit PWM derived from water level setting)
+
+### F. Sensor Telemetry & Safety Cutoff Engine (`MdsMmiMotorProcess` @ `0x2ea68`)
+
+In `0x2ea68`, `mmi_periph` processes incoming hardware telemetry, brush overload warnings, and reservoir detachment interrupts:
+
+```c
+undefined4 MdsMmiMotorProcess(int ctx, undefined4 param_2, char *msg_type) {
+    if (strcmp(msg_type, "MOTOR") == 0) {
+        int *payload = *(int **)(msg_type + 0xc);
+        switch (*payload) {
+        case 0: // Set motor operational mode
+            *(int *)(ctx + 0x3c) = *payload[1];
+            MdsMotorControl(ctx);
+            break;
+        case 2: // Set water permeability level (0=Low, 1=Medium, 2=High, 3=Max)
+            *(int *)(ctx + 0x4c) = *payload[1];
+            MdsMotorControl(ctx);
+            MdsSaveWaterLevelSetting(ctx);
+            break;
+        case 6: // Custom speed adjustment
+            *(int *)(ctx + 0x78) = *payload[1];
+            MdsMotorControl(ctx);
+            break;
+        }
+    }
+    else if (strcmp(msg_type, "SC") == 0) {
+        char *frame = *(char **)(msg_type + 0xc);
+        // "MB" = Motor Board telemetry feedback (Current Sensing)
+        if (frame[0] == 'M' && frame[1] == 'B') {
+            int len = *(int *)(frame + 4);
+            if (len % 3 == 0) {
+                for (int i = 0; i < len; i += 3) {
+                    char *sub = (char *)(*(int *)(frame + 8) + i);
+                    uint8_t motor_id = sub[0];
+                    uint16_t current_adc = *(uint16_t *)(sub + 1);
+                    MdsHandleMotorCurrentMsg(ctx, motor_id, current_adc); // Roller stall detection
+                }
+            }
+        }
+    }
+    else if (strcmp(msg_type, "WATERBOX") == 0) {
+        int *state = *(int **)(msg_type + 0xc);
+        // State 0 = Reservoir ejected
+        if (*state == 0 && *(short *)(ctx + 0x36) != 0) {
+            *(uint16_t *)(ctx + 0x36) = 0; // Cut off water pump PWM immediately
+            *(uint8_t *)(ctx + 0x35) = 2;  // Disengage pump driver
+            MdsMmiMotorElemCastMotorSetMmiMsg(ctx);
+        }
+    }
+    else if (strcmp(msg_type, "ALERT") == 0) {
+        int *alert = *(int **)(msg_type + 0xc);
+        // Alert 0x13 (Tangled/Stalled Brush), Subcodes 8 (Side Brush) or 9 (Main Brush)
+        if (*alert == 0x13 && (alert[1] == 8 || alert[1] == 9)) {
+            MdsMmiMotorElemCastStopBrushMotorMsg(ctx); // Instant motor emergency stop
+        }
+    }
+    return 0;
+}
+```
 
 ---
 
@@ -896,9 +952,52 @@ Inside `<clean .../>`, the attributes `mid` and `p` are strictly mutually exclus
 #### Firmware Abort on Collision
 If both attributes are included:
 `<clean act="s" type="SpotArea" mid="0" p="-500,-500,500,500"/>`
-The firmware dispatcher in `FUN_000183c0` encounters `mid_str != NULL && p_str != NULL`, prints:
-`[M][mds_wifi_cmd_handler.c:0x550] spotArea has mid and p`
-and discards the task.
+The firmware dispatcher in `0x183c0` encounters `mid != NULL && p != NULL`, logs `spotArea has mid and p` and aborts:
+
+```c
+// Excerpt from decompiled FUN_000183c0 in 0x183c0.c:
+local_48 = (char *)iks_find_attrib(clean_node, "mid");
+local_4c = (char *)iks_find_attrib(clean_node, "p");
+
+if (local_48 == NULL || local_4c == NULL) {
+    if (local_48 == NULL) {
+        // Zone Clean (TaskType 9)
+        local_18 = 9; // TaskType 9
+        local_50 = strtok(local_4c, ","); // x1
+        local_54 = strtok(NULL, ",");     // y1
+        local_58 = strtok(NULL, ",");     // x2
+        local_5c = strtok(NULL, ",");     // y2
+        local_98 = (int *)(float)atof(local_50);
+        local_94 = (float)atof(local_54);
+        local_8c = (float)atof(local_58);
+        local_88 = (float)atof(local_5c);
+        local_60 = (char *)iks_find_attrib(clean_node, "deep");
+        local_80 = (local_60 && atoi(local_60) == 2) ? 2 : 1; // 1 or 2 clean passes
+        local_20 = &local_98;
+    } else {
+        // Room Clean (TaskType 2)
+        local_18 = 2; // TaskType 2
+        local_24 = strtok(local_48, ",");
+        while (local_24 != NULL) {
+            aiStack_e8[local_6c++] = atoi(local_24); // array of room mid integers
+            local_24 = strtok(NULL, ",");
+        }
+        local_70 = aiStack_e8;
+        local_20 = &local_70;
+    }
+} else {
+    // MUTUAL EXCLUSION VIOLATION:
+    local_14 = 1;
+    fprintf(stdout, "[M][%s:%d] ", "mds_wifi_cmd_handler.c", 0x550);
+    fwrite("spotArea has mid and p\n", 1, 0x17, stdout);
+}
+
+// If valid, dispatches TASK_MAN broadcast via FUN_00013f10:
+if (local_14 == 0) {
+    FUN_00013f10(ctx, local_18, local_1c, local_20, &local_68);
+    // Dispatches MDSElemCastMsg(ctx, "TASK_MAN", payload);
+}
+```
 
 ### C. Single-Point Spot Cleaning (`type="spot"`)
 ```xml
@@ -1057,3 +1156,22 @@ All binary analysis records in this document have been cross-verified against:
 - Navigation Plugin: `/usr/lib/medusa/plug_medusa_plugin_task_ergodic.so` (MD5: `b5fa1a179659021eb482a5c8df1b5391`)
 - Return Plugin: `/usr/lib/medusa/plug_medusa_plugin_task_return.so` (MD5: `a3777ebff190a6ea17c6a9b47e45e054`)
 - Relocation Plugin: `/usr/lib/medusa/plug_medusa_plugin_task_relocation.so` (MD5: `fc49e3bfecf87e583cce7a08b68832a4`)
+
+---
+
+## 13. Firmware Batch Decompilation Catalog & Source Manifest
+
+All proprietary ELF binaries extracted from the OZMO 930 firmware root filesystem (`research/930_DUMP/squashfs-root`) have been batch-decompiled into C pseudocode files located under `research/decompiled_930_DUMP/`:
+
+* **Toolchain**: REA 6.9.0 + Ghidra 12.2 (Zulu JDK 26, `ARM:LE:32:v7`).
+* **Binary Coverage**: **35 of 36 binaries successfully decompiled** (10,429 `.c` function files).
+* **String Annotation Pipeline**: `research/annotate_strings.py` resolved 1,813 `DAT_` references to inlined string constants.
+
+### Directory Structure & Component Inventory
+
+| Category | Output Directory | Decompiled Binaries | Key Modules & Responsibilities |
+|:---|:---|:---:|:---|
+| **Core Daemons** | `research/decompiled_930_DUMP/core/` | 2 | `medusa` (main daemon supervisor), `mdsctl` (local IPC debugging CLI) |
+| **Support Daemons** | `research/decompiled_930_DUMP/daemons/` | 3 | `wifi_service` (provisioning), `kiss` (watchdog), `mack` (system monitor) |
+| **Medusa Plugins** | `research/decompiled_930_DUMP/plugins/` | 23 | `medusa_plugin_wifiHandler` (38 command handlers)<br>`mmi_periph` (motor/sensor driver loop)<br>`medusa_plugin_task_ergodic` (coverage path planner)<br>`medusa_plugin_task_return` (docking navigator)<br>`medusa_plugin_task_relocation` (localization recovery)<br>`medusa_plugin_map` (grid map serializer)<br>`audio`, `log`, `network`, `sys`, `time`, `userman`, `wukong`, `xmpp` |
+| **Proprietary Libs** | `research/decompiled_930_DUMP/libs/` | 5 | `libcf` (Chunfeng core library), `libUnderErg`, `libEcovacs`, `libWifiMap`, `libcommon` |
