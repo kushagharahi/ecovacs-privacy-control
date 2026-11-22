@@ -27,6 +27,12 @@
  *    stub that only echoes ret="ok" without ever signaling SLAM or reloading storage.
  *    -> This patch intercepts <ctl td="RecoverMap"/> and actually reads /data/FILES/restoreMap.bin,
  *       re-anchors the dock pose from restorePose.bin, and signals the SLAM engine.
+ *
+ * 3. Bulletproof Flash Protection:
+ *    - Hooks rst_removeAllSavedFiles, rst_removeRbpfMapAndPose, rst_removeErgodicData,
+ *      rst_removeChargerStand, rst_removeVirtualWall to block deletion of flash map files.
+ *    - Hooks unlink and remove libc calls targeting /data/FILES/*.
+ *    - Drops MAP clear commands when valid restoreMap.bin is present.
  */
 
 #define LOG_FILE "/tmp/persist_map.log"
@@ -36,6 +42,8 @@
 
 static uint32_t (*real_MDSElemCastMsg)(int ctx, const char *msg_type, void *payload) = NULL;
 static int (*real_MDSElemSendMsg)(void *src, const char *dst_elem, const char *msg_type, void *payload) = NULL;
+static int (*real_unlink)(const char *pathname) = NULL;
+static int (*real_remove)(const char *pathname) = NULL;
 
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 static volatile int g_reloc_failure_trapped = 0;
@@ -53,11 +61,108 @@ static void log_persist(const char *fmt, ...) {
     pthread_mutex_unlock(&g_log_mutex);
 }
 
+static int is_medusa_process(void) {
+    char exe[256] = {0};
+    ssize_t len = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+    if (len > 0) {
+        exe[len] = '\0';
+        if (strstr(exe, "medusa") != NULL && strstr(exe, ".sh") == NULL) {
+            return 1;
+        }
+    }
+    char cmdline[256] = {0};
+    FILE *f = fopen("/proc/self/cmdline", "r");
+    if (f) {
+        size_t n = fread(cmdline, 1, sizeof(cmdline) - 1, f);
+        fclose(f);
+        if (n > 0) {
+            cmdline[n] = '\0';
+            if (strstr(cmdline, "medusa") != NULL && strstr(cmdline, ".sh") == NULL) {
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 __attribute__((constructor))
 static void init_persist_map(void) {
+    if (!is_medusa_process()) return;
     openlog("libpersistmap", LOG_PID | LOG_CONS, LOG_USER);
     syslog(LOG_INFO, "libpersistmap initialized in PID %d", getpid());
     log_persist("[PERSIST-MAP] Initialized libpersistmap (Map Preservation & Recovery) in PID %d\n", getpid());
+}
+
+static int is_protected_map_file(const char *path) {
+    if (!path) return 0;
+    if (strstr(path, "restoreMap.bin") != NULL ||
+        strstr(path, "restorePose.bin") != NULL ||
+        strstr(path, "restoreChargerStand.bin") != NULL ||
+        strstr(path, "ergodic.bin") != NULL ||
+        strstr(path, "restoreVirtualWall.bin") != NULL ||
+        strstr(path, "restoreCarpet.bin") != NULL) {
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Block deletion of persistent map files via libc unlink
+ */
+int unlink(const char *pathname) {
+    if (is_protected_map_file(pathname)) {
+        log_persist("[PERSIST-MAP] BLOCKED unlink(\"%s\")!\n", pathname);
+        syslog(LOG_WARNING, "[PERSIST-MAP] Prevented deletion of %s", pathname);
+        return 0; // Pretend success
+    }
+    if (!real_unlink) {
+        real_unlink = dlsym(RTLD_NEXT, "unlink");
+    }
+    return real_unlink ? real_unlink(pathname) : 0;
+}
+
+/*
+ * Block deletion of persistent map files via libc remove
+ */
+int remove(const char *pathname) {
+    if (is_protected_map_file(pathname)) {
+        log_persist("[PERSIST-MAP] BLOCKED remove(\"%s\")!\n", pathname);
+        syslog(LOG_WARNING, "[PERSIST-MAP] Prevented deletion of %s", pathname);
+        return 0; // Pretend success
+    }
+    if (!real_remove) {
+        real_remove = dlsym(RTLD_NEXT, "remove");
+    }
+    return real_remove ? real_remove(pathname) : 0;
+}
+
+/*
+ * Intercept firmware map wipe functions directly
+ */
+void rst_removeAllSavedFiles(void) {
+    log_persist("[PERSIST-MAP] BLOCKED rst_removeAllSavedFiles()! Map flash files protected.\n");
+    syslog(LOG_WARNING, "[PERSIST-MAP] Blocked rst_removeAllSavedFiles: preserved persistent map files.");
+}
+
+int rst_removeRbpfMapAndPose(const char *map, const char *carpet, const char *pose) {
+    log_persist("[PERSIST-MAP] BLOCKED rst_removeRbpfMapAndPose(%s, %s, %s)!\n",
+                map ? map : "null", carpet ? carpet : "null", pose ? pose : "null");
+    return 0;
+}
+
+int rst_removeErgodicData(const char *path) {
+    log_persist("[PERSIST-MAP] BLOCKED rst_removeErgodicData(%s)\n", path ? path : "null");
+    return 0;
+}
+
+int rst_removeChargerStand(const char *path) {
+    log_persist("[PERSIST-MAP] BLOCKED rst_removeChargerStand(%s)\n", path ? path : "null");
+    return 0;
+}
+
+int rst_removeVirtualWall(const char *path) {
+    log_persist("[PERSIST-MAP] BLOCKED rst_removeVirtualWall(%s)\n", path ? path : "null");
+    return 0;
 }
 
 /*
@@ -101,22 +206,22 @@ uint32_t MDSElemCastMsg(int ctx, const char *msg_type, void *payload) {
     }
 
     if (msg_type != NULL) {
-        // 1. Trap Relocation Failure from TASK_MAN (type 5, status 3=LiftFail, 9=GoChgFail)
+        // 1. Trap Relocation Failure from TASK_MAN (type 5, non-success status)
         if (strcmp(msg_type, "TASK_MAN") == 0 && payload != NULL) {
             int **task_data = (int **)payload;
             if (task_data && *task_data) {
                 int task_cmd = **task_data;
                 if (task_cmd == 5) { // Relocation state change
                     int reloc_state = (*task_data)[1];
-                    if (reloc_state == 3 || reloc_state == 9) { // 3 = relocLiftFail, 9 = relocGoChgFail
-                        log_persist("[PERSIST-MAP] TRAPPED relocation failure state %d (3=LiftFail, 9=GoChgFail)!\n",
-                                    reloc_state);
+                    // States: 0 = start, 1 = relocating, 2 = relocLiftOk, 3 = relocLiftFail, 8 = relocGoChgOk, 9 = relocGoChgFail
+                    if (reloc_state != 2 && reloc_state != 8 && reloc_state != 0 && reloc_state != 1) {
+                        log_persist("[PERSIST-MAP] TRAPPED relocation failure state %d!\n", reloc_state);
                         log_persist("[PERSIST-MAP] Blocking catastrophic map wipe and pose reset.\n");
                         g_reloc_failure_trapped = 1;
 
                         // Override status to prevent wiping: tell caller it is handled safely
-                        syslog(LOG_WARNING, "[PERSIST-MAP] Relocation timeout trapped. Persistent map preserved.");
-                    } else if (reloc_state == 2 || reloc_state == 8) { // 2 = relocLiftOk, 8 = relocGoChgOk
+                        syslog(LOG_WARNING, "[PERSIST-MAP] Relocation failure %d trapped. Persistent map preserved.", reloc_state);
+                    } else if (reloc_state == 2 || reloc_state == 8) {
                         g_reloc_failure_trapped = 0;
                         log_persist("[PERSIST-MAP] Relocation succeeded (state %d).\n", reloc_state);
                     }
@@ -124,12 +229,15 @@ uint32_t MDSElemCastMsg(int ctx, const char *msg_type, void *payload) {
             }
         }
 
-        // 2. Trap ClearMap or map purge triggered while relocation failure is active
+        // 2. Trap ClearMap or map purge: if persistent map files exist, block destructive wipe
         if (strcmp(msg_type, "MAP") == 0 && payload != NULL) {
             int *map_cmd = (int *)payload;
-            if (map_cmd && (*map_cmd == 3) && g_reloc_failure_trapped) {
-                log_persist("[PERSIST-MAP] BLOCKED automatic map-clear event following relocation failure!\n");
-                return 0; // Drop the wipe instruction completely
+            if (map_cmd && (*map_cmd == 3)) {
+                struct stat st;
+                if (stat(RESTORE_MAP_FILE, &st) == 0 && st.st_size >= 100000) {
+                    log_persist("[PERSIST-MAP] BLOCKED automatic MAP cmd 3 (map clear) because valid %s exists!\n", RESTORE_MAP_FILE);
+                    return 0; // Drop the wipe instruction completely
+                }
             }
         }
 

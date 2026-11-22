@@ -1,2 +1,59 @@
-**/.DS_Store
-research/*
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# Editor & IDE configs
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+env/
+
+# Go compiled binaries
+/valetudo-bridge
+cmd/valetudo-bridge/valetudo-bridge*
+api_client/*-linux-*
+api_client/*-darwin-*
+api_client/*-windows-*
+*.exe
+
+# C / Object files & temporary build staging
+*.o
+*.obj
+*.a
+*.d
+robot_patches/.staging/
+
+# Research dumps, firmware extracts, and APK decompilations
+research/
+dump/
+squashfs-root/
+*.dump
+
+# Local runtime logs & temporary files
+*.log
+*.tmp
+*.pid
+
+# Local test audio files (keep persistent assets in designated folders)
+/*.ogg
+/*.wav
+/*.mp3
+
+# Local credentials, certificates & private keys
+*.key
+*.pem
+.env
+.env.local
