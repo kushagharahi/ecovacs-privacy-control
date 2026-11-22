@@ -24,6 +24,8 @@ env/
 # Go compiled binaries
 /valetudo-bridge
 cmd/valetudo-bridge/valetudo-bridge*
+api_client/api_client
+api_client/ecovacs-controller*
 api_client/*-linux-*
 api_client/*-darwin-*
 api_client/*-windows-*
