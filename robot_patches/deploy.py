@@ -200,8 +200,10 @@ load () {
 
 unload () {
 \tstop_script
-\tkill -SIGTERM `cat /tmp/medusa.pid 2>/dev/null` 2>/dev/null
+\tkillall -9 medusa 2>/dev/null
+\trm -f /tmp/medusa.pid /tmp/lock.file 2>/dev/null
 \tkillall wget 2>/dev/null
+\tsleep 1
 }
 
 case "$1" in
@@ -270,9 +272,19 @@ def print_status(session, patches):
     print("\n[BIND MOUNT]:")
     print("  " + (mount_out.strip() if mount_out.strip() else "Inactive"))
 
-    env_out = session.run_cmd('cat /proc/$(pidof medusa | awk "{print \\$1}")/environ 2>/dev/null | tr "\\0" "\\n" | grep LD_PRELOAD')
-    print("\n[RUNNING PROCESS]:")
-    print("  " + (env_out.strip() if env_out.strip() else "No LD_PRELOAD active on running medusa process."))
+    pid_out = session.run_cmd("pidof medusa")
+    pids = [tok for tok in pid_out.split() if tok.isdigit()]
+    pid = pids[0] if pids else None
+    if pid:
+        env_out = session.run_cmd(f'tr "\\0" "\\n" < /proc/{pid}/environ 2>/dev/null | grep LD_PRELOAD')
+        maps_out = session.run_cmd(f'grep -E "/data/.*\\.so" /proc/{pid}/maps 2>/dev/null')
+        print(f"\n[RUNNING PROCESS (PID {pid})]:")
+        print("  " + (env_out.strip() if env_out.strip() else "No LD_PRELOAD active."))
+        print("\n[MAPPED PATCH LIBRARIES]:")
+        print("  " + (maps_out.strip() if maps_out.strip() else "No /data/*.so mapped in memory."))
+    else:
+        print("\n[RUNNING PROCESS]:")
+        print("  Medusa process is NOT running!")
 
 
 def main():
@@ -368,8 +380,9 @@ def main():
 
         # 7. Optional restart
         if args.restart_medusa:
-            print("[ACTIVATE] Applying bind-mount and restarting medusa...")
-            session.run_cmd("/data/autostart/30-medusa-preload.sh start", wait_secs=2)
+            print("[ACTIVATE] Ensuring bind-mount and restarting medusa...")
+            session.run_cmd("if ! mount | grep -q /etc/rc.d/medusa.sh; then mount --bind /data/rc.d/medusa.sh /etc/rc.d/medusa.sh; fi")
+            session.run_cmd("/data/rc.d/medusa.sh restart", wait_secs=3)
         else:
             print("[INFO] Patches installed to /data. They will activate automatically on boot, or use --restart-medusa to activate now.")
 
