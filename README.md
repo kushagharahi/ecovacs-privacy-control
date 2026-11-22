@@ -72,6 +72,35 @@ Home Assistant will automatically discover:
 
 ---
 
+## Custom Firmware Patches & Deployment
+
+Custom shared libraries inject into `medusa` via `LD_PRELOAD` to fix factory firmware quirks and enable quiet point-to-point transit:
+- **Map Saver & Anti-Wipe (`libpersistmap.so`)**: Prevents the robot from deleting its own floor map! In factory Ecovacs firmware, if return-to-dock times out or the robot is picked up, it catastrophically purges the active map from memory, resets coordinates to `(0, 0)`, and blindly wanders into walls. This patch traps relocation timeouts, preserves the active map and coordinates, suppresses blind wandering, and enables true map restoration from storage.
+- **Silent Drive / Quiet Navigation (`libsilentgoto.so`)**: Allows you to drive the robot to coordinates without the vacuum suction motor screaming. By default, the OZMO 930 hardware unconditionally runs the vacuum suction motor at full blast (11,000–15,000 RPM) during any autonomous navigation. This patch silences the cleaning motors whenever the robot is executing a "Go to" point-to-point transit command.
+
+### Deploying Patches over Telnet
+
+The deployment script ([robot_patches/deploy.py](robot_patches/deploy.py)) transfers patches directly over the root Telnet connection (port 23), verifies remote checksums, and configures persistent boot loading via bind mount (`mount --bind /data/rc.d/medusa.sh /etc/rc.d/medusa.sh`):
+
+```bash
+# Deploy all patches from default directory:
+python3 robot_patches/deploy.py --robot-ip <ROBOT_IP>
+
+# Deploy only a specific patch (and compile only that patch):
+python3 robot_patches/deploy.py libsilentgoto --build --robot-ip <ROBOT_IP>
+
+# Deploy from any custom patch directory:
+python3 robot_patches/deploy.py /path/to/my_patch --robot-ip <ROBOT_IP>
+
+# Check which patches are installed and verified on the robot:
+python3 robot_patches/deploy.py --robot-ip <ROBOT_IP> --verify-only
+
+# Deploy and apply immediately (restarts medusa without full reboot):
+python3 robot_patches/deploy.py --robot-ip <ROBOT_IP> --restart-medusa
+```
+
+---
+
 ## API
 
 The controller exposes a local REST API on port `8000`:
@@ -123,7 +152,7 @@ The controller exposes a local REST API on port `8000`:
 - [ ] Run controller and HA MQTT bridge directly on the robot itself (zero external server)
 - [ ] Fix pause button quirks during certain navigation states
 - [ ] Auto-create interactive map rooms/zones in Lovelace
-- [ ] One-click deployment script for custom firmware patches
+- [x] One-click deployment script for custom firmware patches (`robot_patches/deploy.py`)
 - [ ] Integration tests via firmware emulation in QEMU
 
 ---
