@@ -1,49 +1,120 @@
-# Ecovacs Firmware Patch Deployment Tool (Telnet Only)
+# Ecovacs Firmware Runtime Patches & Deployment Framework
 
-This tool automatically discovers any `.so` shared library patches in a given directory and deploys them directly to the robot over Telnet without hardcoding filenames or requiring extra open network ports.
-
----
-
-## How It Works
-
-1. **Dynamic Discovery**: Scans whatever directory you pass (or defaults to `robot_patches/`) for all `.so` libraries.
-2. **Telnet Base64 Transfer**: Streams each `.so` directly across the existing Telnet connection (`port 23`) using `base64 -d`, requiring zero host HTTP servers, extra firewall rules, or complex network routing back to your laptop.
-3. **Remote Checksum Verification**: Calculates local MD5 sums and compares them directly against `md5sum` on the robot.
-4. **Dynamic Preload Wrapper**: Generates `/data/rc.d/medusa.sh` with the exact `LD_PRELOAD` string containing all discovered libraries.
-5. **Autostart Boot Hook**: Deploys `/data/autostart/30-medusa-preload.sh`, which automatically bind-mounts `/data/rc.d/medusa.sh` over `/etc/rc.d/medusa.sh` on every system boot.
+This directory contains dynamic runtime interception patches (`LD_PRELOAD` shared libraries) for the Ecovacs Deebot OZMO 930 (`DR930` / `DG70`), compiled for Rockchip RK3188 ARMv7-A (`ARM:LE:32:v7`), along with the automated Telnet-based deployment tool.
 
 ---
 
-## Usage
+## 1. Overview & Architecture
 
-### 1. Deploy Patches from Default Directory
-```bash
-python3 robot_patches/deploy.py --robot-ip <ROBOT_IP>
-```
+Because the core root filesystem on the robot is mounted from a read-only SquashFS (`/dev/mtdblock3`), permanent binary modifications cannot be written directly to `/usr/bin/medusa` or `/usr/lib/medusa/*.so`.
 
-### 2. Deploy Patches from Any Custom Directory
-```bash
-python3 robot_patches/deploy.py /path/to/my_patches --robot-ip <ROBOT_IP>
-```
-
-### 3. Verify Existing Installation
-```bash
-python3 robot_patches/deploy.py --robot-ip <ROBOT_IP> --verify-only
-```
-
-### 4. Deploy and Apply Immediately
-```bash
-python3 robot_patches/deploy.py --robot-ip <ROBOT_IP> --restart-medusa
-```
-*(By default, patches are installed to `/data` and take effect on next boot. Use `--restart-medusa` to restart the daemon immediately).*
+Instead, our patching architecture leverages dynamic `LD_PRELOAD` injection:
+1. **Persistent Storage (`/data`)**: Patches are stored on the writable ext4 data partition at `/data/*.so`.
+2. **Dynamic Daemon Wrapper (`/data/rc.d/medusa.sh`)**: An updated Medusa init script discovers all `.so` shared libraries in `/data/` and injects them into Medusa's process space via `LD_PRELOAD`.
+3. **Boot Persistence (`/data/autostart/30-medusa-preload.sh`)**: The system autostart script executes on boot, bind-mounting `/data/rc.d/medusa.sh` over `/etc/rc.d/medusa.sh`. When the system watchdog or supervisor starts `medusa`, all active patches are loaded automatically.
+4. **Telnet-Only Ingress (`deploy.py`)**: Streams compiled `.so` binaries over standard Telnet (port 23) using `base64 -d`, requiring zero host HTTP servers, extra open firewall ports, or complex reverse-NAT routing.
 
 ---
 
-## Compilation
+## 2. Active Patches
 
-To compile the patches in `robot_patches/` before deploying:
+### A. `libpersistmap` (Map Preservation & Recovery)
+- **Directory**: `robot_patches/libpersistmap/`
+- **Output Binary**: `libpersistmap.so`
+- **Problem Solved**:
+  - **Relocation Map Wipe**: In factory firmware, if return-to-dock or wheel-lift relocation fails (`relocGoChgFail` state 9 or `relocLiftFail` state 3 in `task_relocation.so`), Medusa clears the active SLAM map from RAM, resets odometry to `(0, 0)`, and enters `docklostsearch` (circling blindly and ramming walls).
+  - **RecoverMap Stub**: In `plug_medusa_plugin_wifiHandler.so` (`0x1a478`), the `<ctl td="RecoverMap"/>` command handler is an empty stub that only echoes `ret="ok"` without ever signaling SLAM or reloading storage.
+- **Interception Mechanism**:
+  - Intercepts `MDSElemCastMsg("TASK_MAN", ...)`: When a catastrophic relocation failure (state 3 or 9) occurs, flags the event and traps subsequent `MDSElemCastMsg("MAP", ClearMap)` calls to prevent RAM map erasure.
+  - Intercepts `MDSElemSendMsg(..., "taskreturn", ...)`: Suppresses `docklostsearch` and `dockrandom` messages, preventing erratic obstacle collisions.
+  - Implements actual `RecoverMap` logic: Reads `/data/FILES/restoreMap.bin`, reloads dock coordinates from `restorePose.bin`, and re-anchors the SLAM engine.
+  - Filesystem Protection: Intercepts `unlink()`, `remove()`, and firmware wipe routines (`rst_removeAllSavedFiles`, `rst_removeRbpfMapAndPose`) targeting `/data/FILES/*.bin`.
+- **Runtime Log**: `/tmp/persist_map.log`
 
+### B. `libsilentgoto` (Pin & Go Silent Navigation)
+- **Directory**: `robot_patches/libsilentgoto/`
+- **Output Binary**: `libsilentgoto.so`
+- **Problem Solved**:
+  - In factory firmware, autonomous point-to-point transit is exclusively coupled to cleaning tasks (Task 9 `SpotArea`). Any transit command unconditionally engages cleaning suction and brush motors (11,000–15,000 RPM) via `MDSMotorControl` (`0x29724` in `plug_mmi_periph.so`) and announces voice lines ("I am starting the clean").
+- **Interception Mechanism**:
+  - Activated dynamically when `/tmp/silent_goto` exists on the robot filesystem (created during Go-To navigation by the Valetudo bridge).
+  - Intercepts `MDSMotorControl`: Forces motor mode to `2` (Idle / 0 RPM) during transit.
+  - Intercepts `MdsMmiMotorElemCastMotorSetMmiMsg`: Zeroes out suction, main brush, and side brush speed targets in peripheral hardware packets.
+  - Silences transit voice announcements (events 55, 24, 80, 81, 82) without modifying stock audio files.
+- **Runtime Log**: `/tmp/silent_goto.log`
+
+---
+
+## 3. Compilation
+
+Patches are cross-compiled for ARMv7 using the local Docker cross-compiler container (`arm-builder` with `arm-linux-gnueabihf-gcc`):
+
+### Compile All Patches
 ```bash
 make -C robot_patches all
 ```
-The Makefile dynamically discovers and builds all subdirectories containing a Makefile.
+
+### Compile a Specific Patch
+```bash
+make -C robot_patches/libpersistmap
+# or
+make -C robot_patches/libsilentgoto
+```
+
+---
+
+## 4. Deployment (`deploy.py`)
+
+### A. Deployment via Kubernetes Probe Pod (Isolated Subnet)
+Because the robot resides on an isolated subnet (`192.168.10.0/24`) not directly routed to the development host, deployment is executed via the `multitool-probe` pod in the `iot-jail` namespace:
+
+```bash
+# 1. Copy deployment script and compiled patches to the probe pod
+kubectl cp -n iot-jail robot_patches/deploy.py multitool-probe:/tmp/deploy.py
+kubectl cp -n iot-jail robot_patches/libpersistmap/libpersistmap.so multitool-probe:/tmp/libpersistmap.so
+kubectl cp -n iot-jail robot_patches/libsilentgoto/libsilentgoto.so multitool-probe:/tmp/libsilentgoto.so
+
+# 2. Deploy patches and restart medusa immediately
+kubectl exec -n iot-jail multitool-probe -- python3 /tmp/deploy.py \
+  /tmp/libpersistmap.so \
+  /tmp/libsilentgoto.so \
+  --robot-ip 192.168.10.224 \
+  --restart-medusa
+```
+
+### B. Direct Deployment (When Directly Routed)
+```bash
+# Deploy all patches in robot_patches/ and restart medusa
+python3 robot_patches/deploy.py --robot-ip 192.168.10.224 --restart-medusa
+
+# Deploy and compile in a single step
+python3 robot_patches/deploy.py libpersistmap libsilentgoto --build --robot-ip 192.168.10.224 --restart-medusa
+```
+
+---
+
+## 5. Verification & Runtime Diagnostics
+
+### Check Patch Installation Without Modifying Files
+```bash
+kubectl exec -n iot-jail multitool-probe -- python3 /tmp/deploy.py --robot-ip 192.168.10.224 --verify-only
+```
+
+### Verify Loaded Patches in Medusa Memory
+```bash
+kubectl exec -n iot-jail multitool-probe -- sh -c \
+  "(echo 'grep -E \"libpersistmap|libsilentgoto\" /proc/\$(pidof medusa)/maps'; sleep 1; echo 'exit') | telnet 192.168.10.224 23"
+```
+*Expected output: Memory mappings for `/data/libpersistmap.so` and `/data/libsilentgoto.so` in `r-xp` segments.*
+
+### Inspect Runtime Patch Logs
+```bash
+kubectl exec -n iot-jail multitool-probe -- sh -c \
+  "(echo 'tail -n 20 /tmp/persist_map.log'; echo 'tail -n 20 /tmp/silent_goto.log'; sleep 1; echo 'exit') | telnet 192.168.10.224 23"
+```
+
+### Clean Medusa Restart (Without Rebooting Robot)
+```bash
+kubectl exec -n iot-jail multitool-probe -- sh -c \
+  "(echo '/data/rc.d/medusa.sh restart'; sleep 2; echo 'pidof medusa'; sleep 1; echo 'exit') | telnet 192.168.10.224 23"
+```
