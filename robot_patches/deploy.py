@@ -194,14 +194,15 @@ stop_script(){
 }
 
 load () {
+\trm -f /tmp/mds_cmd.sock
 \tPRELOADS=$(ls /data/*.so 2>/dev/null | tr '\\n' ' ')
-\tLD_PRELOAD="${PRELOADS}" medusa -f /etc/conf/medusa/deebot_dr930.conf &
+\tLD_PRELOAD="${PRELOADS}" medusa -f /etc/conf/medusa/deebot_dr930.conf </dev/null >/dev/null 2>&1 &
 }
 
 unload () {
 \tstop_script
 \tkillall -9 medusa 2>/dev/null
-\trm -f /tmp/medusa.pid /tmp/lock.file 2>/dev/null
+\trm -f /tmp/medusa.pid /tmp/lock.file /tmp/mds_cmd.sock 2>/dev/null
 \tkillall wget 2>/dev/null
 \tsleep 1
 }
@@ -359,9 +360,11 @@ def main():
 
         # 4. Deploy medusa wrapper that preloads all deployed /data/*.so
         print("[CONFIG] Deploying medusa.sh wrapper...")
+        session.run_cmd("umount /etc/rc.d/medusa.sh 2>/dev/null")
         wrapper_code = generate_medusa_wrapper()
         session.run_cmd("cat << 'EOF_WRAPPER' > /data/rc.d/medusa.sh\n" + wrapper_code + "\nEOF_WRAPPER")
         session.run_cmd("chmod 755 /data/rc.d/medusa.sh")
+        session.run_cmd("mount --bind /data/rc.d/medusa.sh /etc/rc.d/medusa.sh")
 
         # 5. Deploy autostart preload hook
         print("[CONFIG] Deploying autostart hook (/data/autostart/30-medusa-preload.sh)...")

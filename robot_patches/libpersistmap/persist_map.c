@@ -250,6 +250,22 @@ uint32_t MDSElemCastMsg(int ctx, const char *msg_type, void *payload) {
                 reload_persistent_map_files();
             }
         }
+
+        // 4. Trap SLAM destructive resets and slip panics
+        if (strcmp(msg_type, "SLAM") == 0 && payload != NULL) {
+            int *slam_data = (int *)payload;
+            if (slam_data) {
+                int slam_cmd = *slam_data;
+                if (slam_cmd == 7) {
+                    log_persist("[PERSIST-MAP] BLOCKED SLAM cmd 7 (resetEcoLocalization / RAM wipe)!\n");
+                    return 0; // Drop destructive reset completely to keep particles and RAM map
+                }
+                if (slam_cmd == 4) {
+                    log_persist("[PERSIST-MAP] BLOCKED SLAM cmd 4 (onSlamRobotSlipWarn / slip panic)\n");
+                    return 0; // Drop slip warning to prevent unwarranted relocation wanders
+                }
+            }
+        }
     }
 
     return real_MDSElemCastMsg(ctx, msg_type, payload);
