@@ -445,7 +445,11 @@ func handleSetVoiceReports(res http.ResponseWriter, req *http.Request) {
 	enableStr := req.URL.Query().Get("enable")
 	enable := enableStr == "true" || enableStr == "1" || enableStr == "ON"
 	VoiceReports = enable
-	publishXML(SetOnOff("s", enable))
+	// In Ecovacs DR930 firmware: switch 's' is Silent Mode (Hardware Mute).
+	// When Silent Mode is ON (s=1), the firmware executes `amixer sset 'Speaker Mute' on`.
+	// Therefore, VoiceReports = true means Silent Mode = false (s=0).
+	// VoiceReports = false means Silent Mode = true (s=1).
+	publishXML(SetOnOff("s", !enable))
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(http.StatusOK)
 	res.Write([]byte(fmt.Sprintf(`{"status":"success","voice_reports":%v}`, enable)))

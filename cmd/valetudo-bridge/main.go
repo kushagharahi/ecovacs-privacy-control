@@ -39,6 +39,7 @@ func cancelActiveGoTo(httpCli *http.Client) {
 		activeGoToCancel()
 		activeGoToCancel = nil
 		if httpCli != nil {
+			callAPI(httpCli, "/clean?act=stop")
 			callAPI(httpCli, "/silentGoto?enable=0")
 		}
 	}
@@ -423,6 +424,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 			time.Sleep(300 * time.Millisecond)
 
 			// On OZMO 930, navigate to target point via 500mm x 500mm zone centered at (rx, ry)
+			// libpathing.so intercepts mc_setAimPoint, bevels corners (+150mm), densifies waypoints, and applies zero-radius turns.
 			callAPI(httpCli, fmt.Sprintf("/clean?act=s&type=custom&p=%d,%d,%d,%d", rx-250, ry-250, rx+250, ry+250))
 
 			// Background arrival watcher: monitors robot's physical position via /status telemetry
@@ -431,6 +433,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 				defer ticker.Stop()
 
 				hasStartedMoving := false
+				hasConfirmedCleaning := false
 				startTime := time.Now()
 				lastLogTime := time.Now()
 
@@ -438,6 +441,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 					select {
 					case <-ctx.Done():
 						log.Printf("[GOTO] Arrival watcher cancelled (context done)")
+						callAPI(httpCli, "/clean?act=stop")
 						callAPI(httpCli, "/silentGoto?enable=0")
 						return
 					case <-ticker.C:
@@ -467,11 +471,15 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 
 						// Check if robot has left dock and started transit
 						if !hasStartedMoving {
-							if (st.ChargingState != "SlotCharging" && st.ChargingState != "Charging") || distFromDock > 250 {
+							if st.ChargingState == "Cleaning" {
 								hasStartedMoving = true
-								log.Printf("[GOTO] Robot has disengaged dock/idle and begun moving towards (%d, %d)", targetX, targetY)
-							} else if time.Since(startTime) > 20*time.Second {
-								log.Printf("[GOTO] Robot failed to disengage dock within 20s (state=%s), exiting watcher", st.ChargingState)
+								hasConfirmedCleaning = true
+								log.Printf("[GOTO] Robot confirmed in Cleaning state, navigating towards (%d, %d)", targetX, targetY)
+							} else if distFromDock > 250 || (st.ChargingState != "SlotCharging" && st.ChargingState != "Charging" && st.ChargingState != "Docked") {
+								hasStartedMoving = true
+								log.Printf("[GOTO] Robot disengaged dock (state=%s, distFromDock=%.0f), heading towards (%d, %d)", st.ChargingState, distFromDock, targetX, targetY)
+							} else if time.Since(startTime) > 30*time.Second {
+								log.Printf("[GOTO] Robot failed to disengage dock within 30s (state=%s), exiting watcher", st.ChargingState)
 								callAPI(httpCli, "/clean?act=stop")
 								callAPI(httpCli, "/silentGoto?enable=0")
 								return
@@ -481,6 +489,10 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 							}
 						}
 
+						if st.ChargingState == "Cleaning" {
+							hasConfirmedCleaning = true
+						}
+
 						if time.Since(lastLogTime) >= 1500*time.Millisecond {
 							log.Printf("[GOTO] Tracking: Robot at (%d, %d), Target (%d, %d), Dist=%.0fmm, State=%s", currX, currY, targetX, targetY, dist, st.ChargingState)
 							lastLogTime = time.Now()
@@ -488,20 +500,26 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 
 						// When robot arrives within 450mm (~18 inches, robot radius is ~175mm) of target point
 						if dist <= 450 {
-							log.Printf("[GOTO] Destination reached! Robot at (%d, %d), target (%d, %d), dist=%.0fmm. Halting clean so robot parks without cleaning.", currX, currY, targetX, targetY, dist)
+							log.Printf("[GOTO] Destination reached! Robot at (%d, %d), target (%d, %d), dist=%.0fmm. Halting motion.", currX, currY, targetX, targetY, dist)
 							// 1. Halt clean task
 							callAPI(httpCli, "/clean?act=stop")
-							// 2. Freeze wheel motion immediately
-							callAPI(httpCli, "/move?act=stop")
-							// 3. Disable silent goto after brief delay
+							// 2. Disable silent goto
 							time.Sleep(300 * time.Millisecond)
 							callAPI(httpCli, "/silentGoto?enable=0")
 							return
 						}
 
-						// If robot was stopped or returned to dock by another user action AFTER moving started
-						if hasStartedMoving && (st.ChargingState == "SlotCharging" || st.CleanSpeed == "stop" || st.CleanSpeed == "idle") {
-							log.Printf("[GOTO] Robot docked or stopped externally (state=%s, speed=%s), ending watcher", st.ChargingState, st.CleanSpeed)
+						// If robot was docked by user or returned to dock
+						if hasStartedMoving && (st.ChargingState == "SlotCharging" || st.ChargingState == "Charging" || st.ChargingState == "Docked") {
+							log.Printf("[GOTO] Robot docked externally (state=%s), ending watcher", st.ChargingState)
+							callAPI(httpCli, "/silentGoto?enable=0")
+							return
+						}
+
+						// If clean was confirmed active and subsequently stopped/paused externally
+						if hasConfirmedCleaning && (st.ChargingState == "Idle" || st.ChargingState == "Paused") {
+							log.Printf("[GOTO] Clean ended externally (state=%s), ending watcher", st.ChargingState)
+							callAPI(httpCli, "/clean?act=stop")
 							callAPI(httpCli, "/silentGoto?enable=0")
 							return
 						}

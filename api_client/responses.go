@@ -264,16 +264,16 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 			}
 
 			// For robot pose, check if SLAM localization is valid
+			isValid := true
 			if v, ok := valuesMap["-valid"].(string); ok && v == "0" {
-				RobotPoseValid = false
-				log.Printf("[POS] Robot reports unlocalized pose (valid=0), ignoring fallback boot coordinates (%v)", valuesMap["-p"])
-				break
+				isValid = false
 			} else if v, ok := valuesMap["-valid"].(float64); ok && v == 0 {
-				RobotPoseValid = false
-				log.Printf("[POS] Robot reports unlocalized pose (valid=0), ignoring fallback boot coordinates (%v)", valuesMap["-p"])
-				break
+				isValid = false
 			}
-			RobotPoseValid = true
+			RobotPoseValid = isValid
+			if !isValid {
+				log.Printf("[POS] Notice: Robot reports unlocalized pose (valid=0), accepting reported coordinates (%v) as best-effort", valuesMap["-p"])
+			}
 
 			pStr := ""
 			if p, ok := valuesMap["-p"].(string); ok {
@@ -380,8 +380,9 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 				ContinuousClean = isTrue
 				log.Printf("[ONOFF] ContinuousClean = %v", ContinuousClean)
 			case "s":
-				VoiceReports = isTrue
-				log.Printf("[ONOFF] VoiceReports = %v", VoiceReports)
+				// Switch 's' in firmware is Silent Mode (1 = Mute ON, 0 = Mute OFF / VoiceReports active)
+				VoiceReports = !isTrue
+				log.Printf("[ONOFF] Silent Mode = %v (VoiceReports = %v)", isTrue, VoiceReports)
 			case "g":
 				DNDEnabled = isTrue
 				log.Printf("[ONOFF] DNDEnabled = %v", DNDEnabled)
