@@ -67,6 +67,11 @@ All symbol addresses, virtual memory offsets, decompiled C pseudocode, ARM disas
     - [C. Map Preservation Hook Flowchart](#c-map-preservation-hook-flowchart)
 12. [Verification & Reference Checksum Summary](#12-verification--reference-checksum-summary)
 13. [Firmware Batch Decompilation Catalog & Source Manifest](#13-firmware-batch-decompilation-catalog--source-manifest)
+14. [Path Planning Engine, Gate-to-Gate Detour Analysis & Pathing Improvement Architectures](#14-path-planning-engine-gate-to-gate-detour-analysis--pathing-improvement-architectures)
+    - [A. The Gate-to-Gate (G2G) Path Planning Bottleneck (`astar_exe_G2G_NextRoom02` @ `0x251c0`)](#a-the-gate-to-gate-g2g-path-planning-bottleneck-astar_exe_g2g_nextroom02--0x251c0)
+    - [B. Topological Room Graph Traversal & Phantom Doorway Gates (`rma_getDoorPathNodesByGraphSearch` @ `0x47d0c`)](#b-topological-room-graph-traversal--phantom-doorway-gates-rma_getdoorpathnodesbygraphsearch--0x47d0c)
+    - [C. Post-Mortem Analysis: Experimental `libpathing.so` Failure Modes](#c-post-mortem-analysis-experimental-libpathingso-failure-modes)
+    - [D. Evaluated Future Pathing Improvement Architectures](#d-evaluated-future-pathing-improvement-architectures)
 
 ---
 
@@ -1175,3 +1180,150 @@ All proprietary ELF binaries extracted from the OZMO 930 firmware root filesyste
 | **Support Daemons** | `research/decompiled_930_DUMP/daemons/` | 3 | `wifi_service` (provisioning), `kiss` (watchdog), `mack` (system monitor) |
 | **Medusa Plugins** | `research/decompiled_930_DUMP/plugins/` | 23 | `medusa_plugin_wifiHandler` (38 command handlers)<br>`mmi_periph` (motor/sensor driver loop)<br>`medusa_plugin_task_ergodic` (coverage path planner)<br>`medusa_plugin_task_return` (docking navigator)<br>`medusa_plugin_task_relocation` (localization recovery)<br>`medusa_plugin_map` (grid map serializer)<br>`audio`, `log`, `network`, `sys`, `time`, `userman`, `wukong`, `xmpp` |
 | **Proprietary Libs** | `research/decompiled_930_DUMP/libs/` | 5 | `libcf` (Chunfeng core library), `libUnderErg`, `libEcovacs`, `libWifiMap`, `libcommon` |
+
+---
+
+## 14. Path Planning Engine, Gate-to-Gate Detour Analysis & Pathing Improvement Architectures
+
+### A. The Gate-to-Gate (G2G) Path Planning Bottleneck (`astar_exe_G2G_NextRoom02` @ `0x251c0`)
+
+During custom area navigation (`TaskType 9`) or room transit (`TaskType 2`), the robot does not execute a single unconstrained global 2D Euclidean A* across the entire known floor grid. Instead, the firmware planner in `plug_medusa_plugin_task_ergodic.so` executes a hierarchical topological planner termed Gate-to-Gate (`G2G`), anchored by `astar_exe_G2G_NextRoom02` (`0x251c0`):
+
+```c
+// Decompiled from plug_medusa_plugin_task_ergodic.so @ 0x251c0
+int astar_exe_G2G_NextRoom02(
+    undefined4 param_1, undefined4 param_2, 
+    undefined4 start_room_mid, undefined4 target_room_mid,
+    undefined4 start_x, undefined4 start_y, 
+    undefined4 target_x, undefined4 target_y, 
+    undefined4 costmap_ptr)
+{
+    local_14 = 0;
+    local_18 = 0;
+    room_count = rma_getRoomNumAfterFillWithDoor();
+    
+    // Step 1: Query topological room graph for inter-room gateway path
+    rma_getDoorPathNodesByGraphSearch(start_room_mid, target_room_mid, room_count);
+    gate_count = rma_getPathGateNum();
+    
+    if (gate_count < 1) {
+        local_18 = 0;
+    } else {
+        rma_print_selectedNearestDoorPath();
+        cur_x = start_x;
+        cur_y = start_y;
+        gate_idx = 0;
+        
+        // Step 2: Sequentially path through each door gate connecting partitions
+        while (gate_idx <= gate_count) {
+            if (gate_idx < gate_count) {
+                gate_arr = rma_getPathGateArray();
+                next_x = *(undefined4 *)(gate_arr + gate_idx * 8);
+                next_y = *(undefined4 *)(gate_arr + gate_idx * 8 + 4);
+            } else {
+                next_x = target_x;
+                next_y = target_y;
+            }
+            
+            // Step 3: Run local A* strictly to the current gate coordinate
+            status = ast_astarInt400(param_1, param_2, cur_x, cur_y, next_x, next_y, costmap_ptr);
+            if (status == 0) return 0;
+            
+            // Step 4: Line-of-sight chord simplification (FUN_000257e0)
+            FUN_000257e0(0, ast_path_Node_Count - 1, aiStack_fe4);
+            
+            // Append simplified waypoints to global trajectory buffer
+            // ...
+            cur_x = next_x;
+            cur_y = next_y;
+            gate_idx++;
+        }
+        
+        // Step 5: Commit full waypoint trajectory to motion controller
+        mc_setAimPoint(afStack_1304, total_nodes);
+    }
+    return 1;
+}
+```
+
+### B. Topological Room Graph Traversal & Phantom Doorway Gates (`rma_getDoorPathNodesByGraphSearch` @ `0x47d0c`)
+
+The root cause of erratic detours during point-to-point transit (e.g. driving away from an open passage toward an imaginary door) lies in the topological graph solver:
+
+1. **Auto-Segmentation Partitions**: The Ecovacs map partition engine clusters SLAM occupancy grid data into room identifiers (`mid 0, 1, 2...`). In modern open-concept spaces (such as open kitchen-living rooms or wide foyers), auto-segmentation heuristic algorithms frequently bisect open space with an artificial room boundary where no physical wall exists.
+2. **Topological Gate Synthesis**: For every adjacent partition pair, `rma_getDoorPathNodesByGraphSearch` (`0x47d0c`) builds an adjacency graph (`DAT_00060968`) and establishes synthetic "doorway gates" along the boundary line.
+3. **Mandated Gate Traversal**: Even when the physical Euclidean path between the robot and target point is completely open, unobstructed free space, `astar_exe_G2G_NextRoom02` **forces** the path to navigate sequentially through the topological gate coordinates before it is permitted to head toward the destination.
+4. **The "Worst Path" Outcome**: If the synthesized doorway gate is positioned against an opposing wall or far end of the virtual boundary, the robot will drive completely out of its way to cross the partition boundary at that exact gate coordinate, turn sharply, and then double back into the target zone.
+
+```mermaid
+flowchart LR
+    subgraph Natural Euclidean Path
+        R1["Robot Pose"] -->|Direct Line of Sight| T1["Target Pin"]
+    end
+
+    subgraph Firmware G2G Forced Path
+        R2["Robot Pose"] -->|ast_astarInt400| G1["Phantom Gate (Partition Border)"]
+        G1 -->|ast_astarInt400| T2["Target Pin"]
+    end
+```
+
+### C. Post-Mortem Analysis: Experimental `libpathing.so` Failure Modes
+
+During initial attempts to improve transit trajectories, an experimental prototype (`libpathing.so`) was evaluated. Runtime diagnosis revealed four critical failure modes that caused system instability and prevented the robot from returning to its base:
+
+1. **Out-of-Bounds Memory Corruption (Heap Stomping)**:
+   - The patch attempted to set an internal planner flag at `DAT_00ece770` by calculating an offset relative to `libUnderErg.so`: `base_addr + 0x00ebe770`.
+   - `libUnderErg.so` is only ~100 KB in virtual memory size. Adding 15.4 MB caused the write to land at `0x41f64770` inside Medusa's active anonymous dynamic heap allocation (`mmap`).
+   - Stomping the heap corrupted internal thread synchronizations and memory pools.
+2. **Indiscriminate Global Interception of `mc_setAimPoint`**:
+   - The patch intercepted `mc_setAimPoint` unconditionally for every task type in Medusa.
+   - It expanded aim points from 4 nodes up to 19 nodes using cubic spline/chord beveling.
+   - **Docking Failure**: Task 3 (`MdsStartReturnTask` / return to dock) requires millimeter-precision terminal vectors computed by the infrared/docking laser alignment loop. Modifying or smoothing waypoints during Task 3 broke dock ingress, causing the robot to freeze or circle aimlessly outside the charging contacts.
+3. **Hardware Watchdog Termination (`dog.sh`)**:
+   - The heap corruption stalled the main event loop thread in Medusa.
+   - The local Linux watchdog script (`/etc/rc.d/dog.sh`) issues an IPC health check every 60 seconds (`mdsctl /tmp/mds_cmd.sock wk '{"todo":"getDog"}'`).
+   - When Medusa failed to respond, the watchdog executed `killall -9 medusa`, restarting the daemon and dropping active missions.
+4. **Task 8 (Remote Control) Lockout Bug**:
+   - Concurrently, the bridge daemon issued `/move?act=stop` when destination arrival was detected.
+   - In `plug_medusa_plugin_wifiHandler.so` (`0x165d0`), `/move` initiates **Task 8 (`MdsStartRemoteControlTask`)**.
+   - While Task 8 remained active in the task manager, Medusa rejected autonomous navigation commands, including Task 3 (`Charge` / return to dock). (This was resolved by eliminating `/move?act=stop` in `cmd/valetudo-bridge/main.go`).
+
+### D. Evaluated Future Pathing Improvement Architectures
+
+To achieve optimal, straight-line pathing without the risks associated with the prototype patch, three architecturally sound approaches have been evaluated:
+
+#### 1. Architecture 1: Task 9 Direct Global A* Interception (Recommended)
+- **Target Function**: `astar_exe_G2G_NextRoom02` (`0x251c0` in `plug_medusa_plugin_task_ergodic.so`).
+- **Hook Strategy**: Interpose `astar_exe_G2G_NextRoom02` via `LD_PRELOAD`.
+- **Conditioning**: Check active task type via `getCurrentTaskType()` (or inspect `/tmp/silent_goto`).
+  - If `task_type != 9` (e.g. Task 0 Auto Clean or Task 2 Room Clean), call the original `astar_exe_G2G_NextRoom02` unchanged to preserve room sequencing.
+  - If `task_type == 9` (Custom Area Clean / Go-To), **bypass `rma_getDoorPathNodesByGraphSearch` completely**.
+- **Execution**: Directly invoke the firmware's internal single-segment A* routine decompiled at `FUN_00037f9c` (`0x37f9c`):
+  ```c
+  // Single-segment global A* across full 800x800 grid
+  int ok = ast_astarInt400(800, 800, start_x, start_y, target_x, target_y, costmap_ptr);
+  if (ok) {
+      // Native chord line-of-sight simplification and mc_setAimPoint commit
+      setAstartWalkPoint02(target_world_x, target_world_y);
+  }
+  ```
+- **Safety & Stability**:
+  - Uses only internal, existing firmware functions with matching calling conventions.
+  - Generates standard, verified 2–4 point trajectories that `mc_setAimPoint` natively accepts.
+  - Does not modify any memory outside function scope.
+  - Zero interference with Task 3 (Return to dock) or Task 0 (Auto clean).
+
+#### 2. Architecture 2: Line-of-Sight Doorway Gate Bypass (Raycast Shortcut)
+- **Target Function**: `rma_getDoorPathNodesByGraphSearch` (`0x47d0c` in `plug_medusa_plugin_task_ergodic.so`).
+- **Hook Strategy**: Interpose the topological graph search routine.
+- **Raycast Test**: Perform a 2D Bresenham line-of-sight raycast on the active grid costmap (`DAT_00060420` / `restoreMap.bin`) between current robot coordinates and destination coordinates, verifying an inflation radius clearance >= 200 mm (robot chassis radius + safety margin).
+- **Execution**:
+  - If direct line-of-sight is clear of all obstacles: override `rma_getPathGateNum()` to return `0` (or return direct path). The G2G loop immediately transitions to the final destination leg without visiting artificial boundary gates.
+  - If obstacles (walls, furniture) obstruct direct line of sight: delegate directly to the original `rma_getDoorPathNodesByGraphSearch` to follow natural room-to-room doorways.
+- **Safety & Stability**: Seamlessly switches between straight-line open-concept transit and hallway-aware doorway navigation.
+
+#### 3. Architecture 3: Strictly Scoped, Bounded Waypoint Pruning
+- If post-A* waypoint smoothing is implemented:
+  - **Task Guard**: Must explicitly assert `getCurrentTaskType() == 9` and check for `/tmp/silent_goto`. Must return immediately for Task 3 (`MdsStartReturnTask`), Task 0, and Task 1.
+  - **Node Limit**: Total output points must not exceed 6 waypoints to prevent overflowing stack allocations in `afStack_1304` (`float afStack_1304[200]`).
+  - **Memory Safety**: No writes to global binary offsets or external library state. Operates strictly as a pure array transform `(float *in_pts, int in_count) -> (float *out_pts, int out_count)` before calling original `mc_setAimPoint`.
