@@ -43,6 +43,19 @@ Instead, our patching architecture leverages dynamic `LD_PRELOAD` injection:
   - Silences transit voice announcements (events 55, 24, 80, 81, 82) without modifying stock audio files.
 - **Runtime Log**: `/tmp/silent_goto.log`
 
+### C. `libdirectpath` (Direct Global A* & Phantom Doorway Bypass)
+- **Directory**: `robot_patches/libdirectpath/`
+- **Output Binary**: `libdirectpath.so`
+- **Problem Solved**:
+  - In factory firmware, `astar_exe_G2G_NextRoom02` (`0x251c0` in `plug_medusa_plugin_task_ergodic.so`) runs a hierarchical Gate-to-Gate (G2G) path planner that queries `rma_getDoorPathNodesByGraphSearch`.
+  - In open-concept spaces (such as open kitchen/living room layouts), auto-segmentation creates partition boundaries where no physical walls exist. The G2G solver treats these boundaries as abstract rooms requiring transit through a synthetic "door gate" coordinate on the boundary line, forcing the robot to steer completely out of its way to pass through an imaginary doorway before continuing to the target.
+- **Interception Mechanism**:
+  - Intercepts `astar_exe_G2G_NextRoom02` via `LD_PRELOAD`.
+  - Runs native unconstrained 2D Euclidean A* across the full 800x800 grid (`ast_astarInt400`) directly from start coordinates to destination coordinates.
+  - On success, commits waypoints to the motion controller via native `setAstartWalkPoint02`, completely bypassing synthetic room boundary gates.
+  - If direct A* fails (e.g. search budget exceeded or separated by real obstacles), gracefully falls back to stock `astar_exe_G2G_NextRoom02`.
+- **Runtime Log**: `/tmp/direct_path.log`
+
 ---
 
 ## 3. Compilation
@@ -56,6 +69,8 @@ make -C robot_patches all
 
 ### Compile a Specific Patch
 ```bash
+make -C robot_patches/libdirectpath
+# or
 make -C robot_patches/libpersistmap
 # or
 make -C robot_patches/libsilentgoto
@@ -71,11 +86,13 @@ Because the robot resides on an isolated subnet (`192.168.10.0/24`) not directly
 ```bash
 # 1. Copy deployment script and compiled patches to the probe pod
 kubectl cp -n iot-jail robot_patches/deploy.py multitool-probe:/tmp/deploy.py
+kubectl cp -n iot-jail robot_patches/libdirectpath/libdirectpath.so multitool-probe:/tmp/libdirectpath.so
 kubectl cp -n iot-jail robot_patches/libpersistmap/libpersistmap.so multitool-probe:/tmp/libpersistmap.so
 kubectl cp -n iot-jail robot_patches/libsilentgoto/libsilentgoto.so multitool-probe:/tmp/libsilentgoto.so
 
 # 2. Deploy patches and restart medusa immediately
 kubectl exec -n iot-jail multitool-probe -- python3 /tmp/deploy.py \
+  /tmp/libdirectpath.so \
   /tmp/libpersistmap.so \
   /tmp/libsilentgoto.so \
   --robot-ip 192.168.10.224 \
@@ -88,7 +105,7 @@ kubectl exec -n iot-jail multitool-probe -- python3 /tmp/deploy.py \
 python3 robot_patches/deploy.py --robot-ip 192.168.10.224 --restart-medusa
 
 # Deploy and compile in a single step
-python3 robot_patches/deploy.py libpersistmap libsilentgoto --build --robot-ip 192.168.10.224 --restart-medusa
+python3 robot_patches/deploy.py libdirectpath libpersistmap libsilentgoto --build --robot-ip 192.168.10.224 --restart-medusa
 ```
 
 ---
@@ -103,14 +120,14 @@ kubectl exec -n iot-jail multitool-probe -- python3 /tmp/deploy.py --robot-ip 19
 ### Verify Loaded Patches in Medusa Memory
 ```bash
 kubectl exec -n iot-jail multitool-probe -- sh -c \
-  "(echo 'grep -E \"libpersistmap|libsilentgoto\" /proc/\$(pidof medusa)/maps'; sleep 1; echo 'exit') | telnet 192.168.10.224 23"
+  "(echo 'grep -E \"libdirectpath|libpersistmap|libsilentgoto\" /proc/\$(pidof medusa)/maps'; sleep 1; echo 'exit') | telnet 192.168.10.224 23"
 ```
-*Expected output: Memory mappings for `/data/libpersistmap.so` and `/data/libsilentgoto.so` in `r-xp` segments.*
+*Expected output: Memory mappings for `/data/libdirectpath.so`, `/data/libpersistmap.so`, and `/data/libsilentgoto.so` in `r-xp` segments.*
 
 ### Inspect Runtime Patch Logs
 ```bash
 kubectl exec -n iot-jail multitool-probe -- sh -c \
-  "(echo 'tail -n 20 /tmp/persist_map.log'; echo 'tail -n 20 /tmp/silent_goto.log'; sleep 1; echo 'exit') | telnet 192.168.10.224 23"
+  "(echo 'tail -n 20 /tmp/direct_path.log'; echo 'tail -n 20 /tmp/persist_map.log'; echo 'tail -n 20 /tmp/silent_goto.log'; sleep 1; echo 'exit') | telnet 192.168.10.224 23"
 ```
 
 ### Clean Medusa Restart (Without Rebooting Robot)
