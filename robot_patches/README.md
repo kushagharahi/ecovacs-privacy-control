@@ -78,32 +78,14 @@ make -C robot_patches/libsilentgoto
 
 ## 4. Deployment (`deploy.py`)
 
-### A. Deployment via Kubernetes Probe Pod (Isolated Subnet)
-Because the robot resides on an isolated subnet (`192.168.10.0/24`) not directly routed to the development host, deployment is executed via the `multitool-probe` pod in the `iot-jail` namespace:
+Patches are deployed directly to the robot over Telnet (port 23):
 
-```bash
-# 1. Copy deployment script and compiled patches to the probe pod
-kubectl cp -n iot-jail robot_patches/deploy.py multitool-probe:/tmp/deploy.py
-kubectl cp -n iot-jail robot_patches/libdirectpath/libdirectpath.so multitool-probe:/tmp/libdirectpath.so
-kubectl cp -n iot-jail robot_patches/libpersistmap/libpersistmap.so multitool-probe:/tmp/libpersistmap.so
-kubectl cp -n iot-jail robot_patches/libsilentgoto/libsilentgoto.so multitool-probe:/tmp/libsilentgoto.so
-
-# 2. Deploy patches and restart medusa immediately
-kubectl exec -n iot-jail multitool-probe -- python3 /tmp/deploy.py \
-  /tmp/libdirectpath.so \
-  /tmp/libpersistmap.so \
-  /tmp/libsilentgoto.so \
-  --robot-ip 192.168.10.224 \
-  --restart-medusa
-```
-
-### B. Direct Deployment (When Directly Routed)
 ```bash
 # Deploy all patches in robot_patches/ and restart medusa
-python3 robot_patches/deploy.py --robot-ip 192.168.10.224 --restart-medusa
+python3 robot_patches/deploy.py --robot-ip <ROBOT_IP> --restart-medusa
 
-# Deploy and compile in a single step
-python3 robot_patches/deploy.py libdirectpath libpersistmap libsilentgoto --build --robot-ip 192.168.10.224 --restart-medusa
+# Deploy and compile specific patches in a single step
+python3 robot_patches/deploy.py libdirectpath libpersistmap libsilentgoto --build --robot-ip <ROBOT_IP> --restart-medusa
 ```
 
 ---
@@ -112,24 +94,21 @@ python3 robot_patches/deploy.py libdirectpath libpersistmap libsilentgoto --buil
 
 ### Check Patch Installation Without Modifying Files
 ```bash
-kubectl exec -n iot-jail multitool-probe -- python3 /tmp/deploy.py --robot-ip 192.168.10.224 --verify-only
+python3 robot_patches/deploy.py --robot-ip <ROBOT_IP> --verify-only
 ```
 
 ### Verify Loaded Patches in Medusa Memory
 ```bash
-kubectl exec -n iot-jail multitool-probe -- sh -c \
-  "(echo 'grep -E \"libdirectpath|libpersistmap|libsilentgoto\" /proc/\$(pidof medusa)/maps'; sleep 1; echo 'exit') | telnet 192.168.10.224 23"
+(echo 'grep -E "libdirectpath|libpersistmap|libsilentgoto" /proc/$(pidof medusa)/maps'; sleep 1; echo 'exit') | telnet <ROBOT_IP> 23
 ```
 *Expected output: Memory mappings for `/data/libdirectpath.so`, `/data/libpersistmap.so`, and `/data/libsilentgoto.so` in `r-xp` segments.*
 
 ### Inspect Runtime Patch Logs
 ```bash
-kubectl exec -n iot-jail multitool-probe -- sh -c \
-  "(echo 'tail -n 20 /tmp/direct_path.log'; echo 'tail -n 20 /tmp/persist_map.log'; echo 'tail -n 20 /tmp/silent_goto.log'; sleep 1; echo 'exit') | telnet 192.168.10.224 23"
+(echo 'tail -n 20 /tmp/direct_path.log'; echo 'tail -n 20 /tmp/persist_map.log'; echo 'tail -n 20 /tmp/silent_goto.log'; sleep 1; echo 'exit') | telnet <ROBOT_IP> 23
 ```
 
 ### Clean Medusa Restart (Without Rebooting Robot)
 ```bash
-kubectl exec -n iot-jail multitool-probe -- sh -c \
-  "(echo '/data/rc.d/medusa.sh restart'; sleep 2; echo 'pidof medusa'; sleep 1; echo 'exit') | telnet 192.168.10.224 23"
+(echo '/data/rc.d/medusa.sh restart'; sleep 2; echo 'pidof medusa'; sleep 1; echo 'exit') | telnet <ROBOT_IP> 23
 ```
