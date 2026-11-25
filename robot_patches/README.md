@@ -22,13 +22,13 @@ Instead, our patching architecture leverages dynamic `LD_PRELOAD` injection:
 - **Directory**: `robot_patches/libpersistmap/`
 - **Output Binary**: `libpersistmap.so`
 - **Problem Solved**:
-  - **Relocation Map Wipe**: In factory firmware, if return-to-dock or wheel-lift relocation fails (`relocGoChgFail` state 9 or `relocLiftFail` state 3 in `task_relocation.so`), Medusa clears the active SLAM map from RAM, resets odometry to `(0, 0)`, and enters `docklostsearch` (circling blindly and ramming walls).
+  - **Relocation Map Wipe**: In factory firmware (`plug_mmi_periph.so` `onMainTaskFinished`), if `Lift`/`DuringRunning` relocation (`reloc_type == 0`) fails (or succeeds with `> 1.5 m` jump), Medusa calls `MdsresetAll(ctx, 0)`, clears the RAM map and odometry to `(0, 0)`, and auto-launches Task `0` Auto Clean (or blind return search).
   - **RecoverMap Stub**: In `plug_medusa_plugin_wifiHandler.so` (`0x1a478`), the `<ctl td="RecoverMap"/>` command handler is an empty stub that only echoes `ret="ok"` without ever signaling SLAM or reloading storage.
 - **Interception Mechanism**:
-  - Intercepts `MDSElemCastMsg("TASK_MAN", ...)`: When a catastrophic relocation failure (state 3 or 9) occurs, flags the event and traps subsequent `MDSElemCastMsg("MAP", ClearMap)` calls to prevent RAM map erasure.
-  - Intercepts `MDSElemSendMsg(..., "taskreturn", ...)`: Suppresses `docklostsearch` and `dockrandom` messages, preventing erratic obstacle collisions.
-  - Implements actual `RecoverMap` logic: Reads `/data/FILES/restoreMap.bin`, reloads dock coordinates from `restorePose.bin`, and re-anchors the SLAM engine.
-  - Filesystem Protection: Intercepts `unlink()`, `remove()`, and firmware wipe routines (`rst_removeAllSavedFiles`, `rst_removeRbpfMapAndPose`) targeting `/data/FILES/*.bin`.
+  - Hooks `plug_mmi_periph.so` PLT functions (`MdsLoadAndAnalyzeMap`, `MdsStartReloadMap`, `MdsresetAll`, `onMainTaskFinished`): on `Lift`/`Running` relocation failure with a valid map, stops cleanly and calls `MdsLoadAndAnalyzeMap` instead of `MdsresetAll(ctx, 0)` or auto-cleaning; on `Reload` final failure (`> 3` retries) with `ctx+0x14c != 0`, prevents `MdsSaveMapToFs` overwrite.
+  - Parses `TASK_MAN` type `5` (`{ reloc_type, status }`) and allows `MAP` cmd `3` subcmds except unauthorized `subcmd == 4` (`clearWifiMap`).
+  - Implements actual `RecoverMap` logic: unwraps `CtlCmd` `{ from, to, iks* }` via `iks_find_attrib` and triggers `MdsStartReloadMap` (or verifies `restoreMap.bin`/`restorePose.bin`).
+  - Filesystem Protection: Intercepts `unlink()`, `remove()`, and firmware wipe routines (`rst_removeAllSavedFiles`, `rst_removeRbpfMapAndPose`) targeting `/data/FILES/` files unless explicit user `ClearMap` (`MdsresetAll(ctx, 1)`) is active.
 - **Runtime Log**: `/tmp/persist_map.log`
 
 ### B. `libsilentgoto` (Pin & Go Silent Navigation)
@@ -40,7 +40,7 @@ Instead, our patching architecture leverages dynamic `LD_PRELOAD` injection:
   - Activated dynamically when `/tmp/silent_goto` exists on the robot filesystem (created during Go-To navigation by the Valetudo bridge).
   - Intercepts `MDSMotorControl`: Forces motor mode to `2` (Idle / 0 RPM) during transit.
   - Intercepts `MdsMmiMotorElemCastMotorSetMmiMsg`: Zeroes out suction, main brush, and side brush speed targets in peripheral hardware packets.
-  - Silences transit voice announcements (events 55, 24, 80, 81, 82) without modifying stock audio files.
+  - Silences transit voice announcements (`0x0e, 0x13, 0x14, 0x15, 0x16, 0x18, 0x1b, 0x1d, 0x25, 0x26, 0x28, 0x2d` on `MdsPlayAudio` / `PLAYER cmd == 1`) without modifying stock audio files.
 - **Runtime Log**: `/tmp/silent_goto.log`
 
 ### C. `libdirectpath` (Direct Global A* & Phantom Doorway Bypass)
@@ -50,10 +50,8 @@ Instead, our patching architecture leverages dynamic `LD_PRELOAD` injection:
   - In factory firmware, `astar_exe_G2G_NextRoom02` (`0x251c0` in `plug_medusa_plugin_task_ergodic.so`) runs a hierarchical Gate-to-Gate (G2G) path planner that queries `rma_getDoorPathNodesByGraphSearch`.
   - In open-concept spaces (such as open kitchen/living room layouts), auto-segmentation creates partition boundaries where no physical walls exist. The G2G solver treats these boundaries as abstract rooms requiring transit through a synthetic "door gate" coordinate on the boundary line, forcing the robot to steer completely out of its way to pass through an imaginary doorway before continuing to the target.
 - **Interception Mechanism**:
-  - Intercepts `astar_exe_G2G_NextRoom02` via `LD_PRELOAD`.
-  - Runs native unconstrained 2D Euclidean A* across the full 800x800 grid (`ast_astarInt400`) directly from start coordinates to destination coordinates.
-  - On success, commits waypoints to the motion controller via native `setAstartWalkPoint02`, completely bypassing synthetic room boundary gates.
-  - If direct A* fails (e.g. search budget exceeded or separated by real obstacles), gracefully falls back to stock `astar_exe_G2G_NextRoom02`.
+  - Intercepts `findpathInt400` and `ast_astarInt400WitCoef` (alongside bounded `astar_exe_G2G_NextRoom02`) via `LD_PRELOAD`.
+  - Runs single-pass soft-inflated 8-dir A* on the `400x400` (`100mm/cell`) grid with upfront obstacle-goal rejection, `MAX_ASTAR_POPS = 120000`, `coef <= 0.6f` tight-clearance scoping, colinear compression, and `MAX_RAW_ASTAR_NODES = 999` / `MAX_WAYPOINTS = 50` caps.
 - **Runtime Log**: `/tmp/direct_path.log`
 
 ---

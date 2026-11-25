@@ -12,13 +12,55 @@
 
 #define SILENT_GOTO_TRIGGER "/tmp/silent_goto"
 #define LOG_FILE "/tmp/silent_goto.log"
+#define MMI_PERIPH_PLUGIN "/usr/lib/medusa/plug_mmi_periph.so"
 
-static void (*real_MdsMotorControl)(void *ctx) = NULL;
-static void (*real_MdsMmiMotorElemCastMotorSetMmiMsg)(void *ctx) = NULL;
+static uint32_t (*real_MdsMotorControl)(void *ctx) = NULL;
+static uint32_t (*real_MdsMmiMotorElemCastMotorSetMmiMsg)(void *ctx) = NULL;
 static uint32_t (*real_MDSElemCastMsg)(int param_1, const char *param_2, void *param_3) = NULL;
 static int (*real_MdsPlayAudio)(void *ctx, uint32_t event) = NULL;
 
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_sym_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void *g_periph_handle = NULL;
+
+static void *resolve_periph_sym(const char *name) {
+    pthread_mutex_lock(&g_sym_mutex);
+    if (!g_periph_handle) {
+        g_periph_handle = dlopen(MMI_PERIPH_PLUGIN, RTLD_NOLOAD | RTLD_NOW);
+        if (!g_periph_handle) {
+            g_periph_handle = dlopen(MMI_PERIPH_PLUGIN, RTLD_NOW);
+        }
+    }
+    void *sym = g_periph_handle ? dlsym(g_periph_handle, name) : NULL;
+    if (!sym) {
+        sym = dlsym(RTLD_NEXT, name);
+    }
+    pthread_mutex_unlock(&g_sym_mutex);
+    return sym;
+}
+
+static int is_suppressed_audio_event(uint32_t event, int silent_goto) {
+    // Always suppress event 0x28 (Sound 74: "Difficult to locate, starting new cleaning cycle")
+    if (event == 0x28) {
+        return 1;
+    }
+    if (!silent_goto) {
+        return 0;
+    }
+    // Suppress default factory announcements during silent goto (mmi_periph FUN_00031ff8):
+    // Event 0x0e (14) = Sound 86 ("Returning to dock" / finish clean transit)
+    // Event 0x25 (37) = Sound 55 ("I am relocating")
+    // Event 0x26 (38) = Sound 71
+    // Event 0x1b (27) = Sound 24 ("Unable to locate" / "Relocation failed")
+    // Event 0x18 (24) = Sound 63
+    // Event 0x15 (21) = Sound 80 ("I am starting the clean")
+    // Event 0x14 (20) = Sound 81 ("I am starting the clean" alt)
+    // Event 0x13 (19) = Sound 82 ("I am starting the clean" alt2)
+    // Event 0x16 (22) = Sound 79, 0x1d (29) = Sound 65, 0x2d (45) = Sound 75
+    return (event == 0x0e || event == 0x13 || event == 0x14 || event == 0x15 ||
+            event == 0x16 || event == 0x18 || event == 0x1b || event == 0x1d ||
+            event == 0x25 || event == 0x26 || event == 0x2d);
+}
 
 static void log_msg(const char *fmt, ...) {
     pthread_mutex_lock(&g_log_mutex);
@@ -65,21 +107,33 @@ static int is_medusa_process(void) {
  */
 uint32_t MDSElemCastMsg(int param_1, const char *param_2, void *param_3) {
     if (!real_MDSElemCastMsg) {
-        real_MDSElemCastMsg = dlsym(RTLD_NEXT, "MDSElemCastMsg");
+        pthread_mutex_lock(&g_sym_mutex);
+        if (!real_MDSElemCastMsg) {
+            real_MDSElemCastMsg = dlsym(RTLD_NEXT, "MDSElemCastMsg");
+        }
+        pthread_mutex_unlock(&g_sym_mutex);
         if (!real_MDSElemCastMsg) {
             syslog(LOG_ERR, "Failed to resolve real MDSElemCastMsg: %s", dlerror());
             return 0;
         }
     }
 
-    if (access(SILENT_GOTO_TRIGGER, F_OK) == 0) {
-        // 1. SILENCE VOICE PROMPTS ("I am starting to clean", chimes, etc.)
-        if (param_2 && strcmp(param_2, "PLAYER") == 0) {
-            syslog(LOG_INFO, "[SILENT-GOTO] Suppressed PLAYER voice announcement during silent goto");
-            log_msg("[SILENT-GOTO] Suppressed PLAYER voice announcement during silent goto\n");
-            return 0; // Drop audio announcement completely
-        }
+    int silent_goto = (access(SILENT_GOTO_TRIGGER, F_OK) == 0);
 
+    // 1. SILENCE VOICE PROMPTS ("I am starting to clean", chimes, etc.) on PLAYER cmd=1 only
+    if (param_2 && strcmp(param_2, "PLAYER") == 0 && param_3 != NULL) {
+        uint32_t *player_msg = (uint32_t *)param_3;
+        if (player_msg[0] == 1 && player_msg[1] != 0) {
+            uint32_t event = *(uint32_t *)player_msg[1];
+            if (is_suppressed_audio_event(event, silent_goto)) {
+                syslog(LOG_INFO, "[SILENT-GOTO] Suppressed PLAYER voice announcement event 0x%x", event);
+                log_msg("[SILENT-GOTO] Suppressed PLAYER voice announcement event 0x%x\n", event);
+                return 0; // Drop transit audio announcement without breaking language queries (cmd 0/2/3)
+            }
+        }
+    }
+
+    if (silent_goto) {
         // 2. SILENCE MOTOR SUCTION & BRUSHES
         if (param_2 && strcmp(param_2, "MOTOR") == 0 && param_3 != NULL) {
             uint32_t *cmd = (uint32_t *)param_3;
@@ -101,12 +155,12 @@ uint32_t MDSElemCastMsg(int param_1, const char *param_2, void *param_3) {
  * MdsMotorControl in plug_mmi_periph.so:
  * Hardware motor speed setter.
  */
-void MdsMotorControl(void *ctx) {
+uint32_t MdsMotorControl(void *ctx) {
     if (!real_MdsMotorControl) {
-        real_MdsMotorControl = dlsym(RTLD_NEXT, "MdsMotorControl");
+        real_MdsMotorControl = resolve_periph_sym("MdsMotorControl");
         if (!real_MdsMotorControl) {
             syslog(LOG_ERR, "Failed to resolve real MdsMotorControl: %s", dlerror());
-            return;
+            return 0;
         }
     }
 
@@ -116,18 +170,18 @@ void MdsMotorControl(void *ctx) {
         *mode = 2; // Force Idle mode (All cleaning motors 0 RPM)
     }
 
-    real_MdsMotorControl(ctx);
+    return real_MdsMotorControl(ctx);
 }
 
 /*
  * MdsMmiMotorElemCastMotorSetMmiMsg in plug_mmi_periph.so:
  * Transmits the 18-byte 'MA' motor speed packet over UART to the STM32 microcontroller.
  */
-void MdsMmiMotorElemCastMotorSetMmiMsg(void *ctx) {
+uint32_t MdsMmiMotorElemCastMotorSetMmiMsg(void *ctx) {
     if (!real_MdsMmiMotorElemCastMotorSetMmiMsg) {
-        real_MdsMmiMotorElemCastMotorSetMmiMsg = dlsym(RTLD_NEXT, "MdsMmiMotorElemCastMotorSetMmiMsg");
+        real_MdsMmiMotorElemCastMotorSetMmiMsg = resolve_periph_sym("MdsMmiMotorElemCastMotorSetMmiMsg");
         if (!real_MdsMmiMotorElemCastMotorSetMmiMsg) {
-            return;
+            return 0;
         }
     }
 
@@ -141,7 +195,7 @@ void MdsMmiMotorElemCastMotorSetMmiMsg(void *ctx) {
         log_msg("[SILENT-GOTO] MdsMmiMotorElemCastMotorSetMmiMsg: Zeroed all motor targets\n");
     }
 
-    real_MdsMmiMotorElemCastMotorSetMmiMsg(ctx);
+    return real_MdsMmiMotorElemCastMotorSetMmiMsg(ctx);
 }
 
 /*
@@ -151,21 +205,14 @@ void MdsMmiMotorElemCastMotorSetMmiMsg(void *ctx) {
  */
 int MdsPlayAudio(void *ctx, uint32_t event) {
     if (!real_MdsPlayAudio) {
-        real_MdsPlayAudio = dlsym(RTLD_NEXT, "MdsPlayAudio");
+        real_MdsPlayAudio = resolve_periph_sym("MdsPlayAudio");
     }
 
-    if (access(SILENT_GOTO_TRIGGER, F_OK) == 0) {
-        // Suppress default factory announcements during silent goto:
-        // Event 0x25 (37) = Sound 55 ("I am relocating")
-        // Event 0x18 (24) = Sound 24 ("Unable to locate" / "Relocation failed")
-        // Event 0x15 (21) = Sound 80 ("I am starting the clean")
-        // Event 0x14 (20) = Sound 81 ("I am starting the clean" alt)
-        // Event 0x13 (19) = Sound 82 ("I am starting the clean" alt2)
-        if (event == 0x25 || event == 0x18 || event == 0x15 || event == 0x14 || event == 0x13) {
-            log_msg("[SILENT-GOTO] Suppressed MdsPlayAudio event 0x%x\n", event);
-            syslog(LOG_INFO, "[SILENT-GOTO] Suppressed MdsPlayAudio event 0x%x", event);
-            return 1; // Return 1 (success) so caller considers audio played
-        }
+    int silent_goto = (access(SILENT_GOTO_TRIGGER, F_OK) == 0);
+    if (is_suppressed_audio_event(event, silent_goto)) {
+        log_msg("[SILENT-GOTO] Suppressed MdsPlayAudio event 0x%x\n", event);
+        syslog(LOG_INFO, "[SILENT-GOTO] Suppressed MdsPlayAudio event 0x%x", event);
+        return 1; // Return 1 (success) so caller considers audio played
     }
 
     return real_MdsPlayAudio ? real_MdsPlayAudio(ctx, event) : 1;

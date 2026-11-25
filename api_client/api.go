@@ -39,6 +39,7 @@ func setupApi() {
 	r.HandleFunc("/rooms/rename", handleRenameRooms).Methods("POST")
 	r.HandleFunc("/silentGoto", handleSilentGoto).Methods("POST", "GET")
 	r.HandleFunc("/goTo", handleGoTo).Methods("POST", "GET")
+	r.HandleFunc("/recoverMap", handleRecoverMap).Methods("POST", "GET")
 	http.Handle("/", r)
 	go http.ListenAndServe(":8000", r)
 }
@@ -93,10 +94,16 @@ func handleMapGrid(res http.ResponseWriter, req *http.Request) {
 		h = len(grid[0])
 	}
 
+	statusMu.RLock()
 	pixRobotX := RobotPosX - minX
 	pixRobotY := RobotPosY - minY
 	pixChargerX := ChargerPosX - minX
 	pixChargerY := ChargerPosY - minY
+	chargingState := ChargingState
+	poseValid := RobotPoseValid
+	robotAngle := RobotAngle
+	roomsCopy := append([]string(nil), DiscoveredRooms...)
+	statusMu.RUnlock()
 
 	if pXStr := os.Getenv("ROBOT_DOCK_PIXEL_X"); pXStr != "" {
 		if px, err := strconv.Atoi(pXStr); err == nil {
@@ -109,8 +116,7 @@ func handleMapGrid(res http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	isDocked := ChargingState == "SlotCharging" || ChargingState == "Charging"
-	poseValid := RobotPoseValid
+	isDocked := chargingState == "SlotCharging" || chargingState == "Charging"
 	if isDocked {
 		pixRobotX = pixChargerX
 		pixRobotY = pixChargerY
@@ -146,8 +152,8 @@ func handleMapGrid(res http.ResponseWriter, req *http.Request) {
 		PoseValid:           poseValid,
 		ChargerPixelX:       pixChargerX,
 		ChargerPixelY:       pixChargerY,
-		RobotAngle:          RobotAngle,
-		Rooms:               DiscoveredRooms,
+		RobotAngle:          robotAngle,
+		Rooms:               roomsCopy,
 		RoomNames:           rNames,
 		VirtualRestrictions: restrs,
 		PathPoints:          pts,
@@ -285,6 +291,7 @@ func getStatus(res http.ResponseWriter, req *http.Request) {
 	// Proactively request latest updates from the vacuum
 	publishXML(GetBatteryInfo)
 	publishXML(GetChargeState)
+	publishXML(GetCleanState)
 	publishXML(GetOnOff("b"))
 	publishXML(GetOnOff("l"))
 	publishXML(GetOnOff("s"))
@@ -298,6 +305,20 @@ func getStatus(res http.ResponseWriter, req *http.Request) {
 	publishXML(GetSideBrushLifeSpan)
 	publishXML(GetDustCaseHeapLifeSpan)
 
+	statusMu.RLock()
+	batteryLevel, chargingState := BatteryLevel, ChargingState
+	volumeLevel, waterLevel, waterBoxInstalled := VolumeLevel, WaterLevel, WaterBoxInstalled
+	carpetBoost, continuousClean, voiceReports, dndEnabled := CarpetBoost, ContinuousClean, VoiceReports, DNDEnabled
+	totalCleanCount, totalCleanArea, totalCleanTime := TotalCleanCount, TotalCleanArea, TotalCleanTime
+	cleanSpeed, sleepStatus := CleanSpeed, SleepStatus
+	brushLifeSpan, sideBrushLifeSpan, dustCaseHeapLifeSpan := BrushLifeSpan, SideBrushLifeSpan, DustCaseHeapLifeSpan
+	discoveredRooms := append([]string(nil), DiscoveredRooms...)
+	errs, robotAngle := Errors, RobotAngle
+	poseValid := RobotPoseValid
+	robotPosX, robotPosY, chargerPosX, chargerPosY := RobotPosX, RobotPosY, ChargerPosX, ChargerPosY
+	cropMinX, cropMinY := MapCropMinX, MapCropMinY
+	statusMu.RUnlock()
+
 	pixelRobotX := 0
 	pixelRobotY := 0
 	pixelChargerX := 0
@@ -309,76 +330,81 @@ func getStatus(res http.ResponseWriter, req *http.Request) {
 	// On imgRGBA (width = numRows, height = numCols):
 	// pixelX = row - minRow = RobotPosY - MapCropMinX
 	// pixelY = col - minCol = RobotPosX - MapCropMinY
-	if MapCropMinX > 0 && MapCropMinY > 0 {
-		if RobotPosX > 0 && RobotPosY > 0 {
-			pixelRobotX = RobotPosX - MapCropMinX
-			pixelRobotY = RobotPosY - MapCropMinY
+	if cropMinX > 0 || cropMinY > 0 {
+		if robotPosX >= 0 && robotPosY >= 0 {
+			pixelRobotX = robotPosX - cropMinX
+			pixelRobotY = robotPosY - cropMinY
 		}
-		if ChargerPosX > 0 && ChargerPosY > 0 {
-			pixelChargerX = ChargerPosX - MapCropMinX
-			pixelChargerY = ChargerPosY - MapCropMinY
+		if chargerPosX >= 0 && chargerPosY >= 0 {
+			pixelChargerX = chargerPosX - cropMinX
+			pixelChargerY = chargerPosY - cropMinY
 		}
 	} else {
-		pixelRobotX = RobotPosX
-		pixelRobotY = RobotPosY
-		pixelChargerX = ChargerPosX
-		pixelChargerY = ChargerPosY
+		pixelRobotX = robotPosX
+		pixelRobotY = robotPosY
+		pixelChargerX = chargerPosX
+		pixelChargerY = chargerPosY
 	}
 
 	if pXStr := os.Getenv("ROBOT_DOCK_PIXEL_X"); pXStr != "" {
 		if px, err := strconv.Atoi(pXStr); err == nil {
 			pixelChargerX = px
+			if cropMinX > 0 || cropMinY > 0 {
+				chargerPosX = cropMinX + px
+			}
 		}
 	}
 	if pYStr := os.Getenv("ROBOT_DOCK_PIXEL_Y"); pYStr != "" {
 		if py, err := strconv.Atoi(pYStr); err == nil {
 			pixelChargerY = py
+			if cropMinX > 0 || cropMinY > 0 {
+				chargerPosY = cropMinY + py
+			}
 		}
 	}
 
-	poseValid := RobotPoseValid
-	posX := RobotPosX
-	posY := RobotPosY
-	if ChargingState == "SlotCharging" || ChargingState == "Charging" {
+	posX := robotPosX
+	posY := robotPosY
+	if chargingState == "SlotCharging" || chargingState == "Charging" {
 		pixelRobotX = pixelChargerX
 		pixelRobotY = pixelChargerY
-		posX = ChargerPosX
-		posY = ChargerPosY
+		posX = chargerPosX
+		posY = chargerPosY
 		poseValid = true
 	}
 
 	response := StatusResponse{
-		BatteryLevel:         BatteryLevel,
-		ChargingState:        ChargingState,
-		VolumeLevel:          VolumeLevel,
-		WaterLevel:           WaterLevel,
-		WaterBoxInstalled:    WaterBoxInstalled,
-		CarpetBoost:          CarpetBoost,
-		ContinuousClean:      ContinuousClean,
-		VoiceReports:         VoiceReports,
-		DNDEnabled:           DNDEnabled,
-		TotalCleanCount:      TotalCleanCount,
-		TotalCleanArea:       TotalCleanArea,
-		TotalCleanTime:       TotalCleanTime,
-		CleanSpeed:           CleanSpeed,
-		SleepStatus:          SleepStatus,
-		BrushLifeSpan:        BrushLifeSpan,
-		SideBrushLifeSpan:    SideBrushLifeSpan,
-		DustCaseHeapLifeSpan: DustCaseHeapLifeSpan,
-		DiscoveredRooms:      DiscoveredRooms,
-		Errors:               Errors,
+		BatteryLevel:         batteryLevel,
+		ChargingState:        chargingState,
+		VolumeLevel:          volumeLevel,
+		WaterLevel:           waterLevel,
+		WaterBoxInstalled:    waterBoxInstalled,
+		CarpetBoost:          carpetBoost,
+		ContinuousClean:      continuousClean,
+		VoiceReports:         voiceReports,
+		DNDEnabled:           dndEnabled,
+		TotalCleanCount:      totalCleanCount,
+		TotalCleanArea:       totalCleanArea,
+		TotalCleanTime:       totalCleanTime,
+		CleanSpeed:           cleanSpeed,
+		SleepStatus:          sleepStatus,
+		BrushLifeSpan:        brushLifeSpan,
+		SideBrushLifeSpan:    sideBrushLifeSpan,
+		DustCaseHeapLifeSpan: dustCaseHeapLifeSpan,
+		DiscoveredRooms:      discoveredRooms,
+		Errors:               errs,
 		RobotPosX:            posX,
 		RobotPosY:            posY,
-		RobotAngle:           RobotAngle,
-		ChargerPosX:          ChargerPosX,
-		ChargerPosY:          ChargerPosY,
+		RobotAngle:           robotAngle,
+		ChargerPosX:          chargerPosX,
+		ChargerPosY:          chargerPosY,
 		RobotPixelX:          pixelRobotX,
 		RobotPixelY:          pixelRobotY,
 		PoseValid:            poseValid,
 		ChargerPixelX:        pixelChargerX,
 		ChargerPixelY:        pixelChargerY,
-		CropMinX:             MapCropMinX,
-		CropMinY:             MapCropMinY,
+		CropMinX:             cropMinX,
+		CropMinY:             cropMinY,
 	}
 
 	res.Header().Set("Content-Type", "application/json")
@@ -394,11 +420,16 @@ func handleClean(res http.ResponseWriter, req *http.Request) {
 	} else if act == "stop" {
 		publishXML(CleanStop)
 	} else if cleanType == "spot_area" || cleanType == "SpotArea" {
+		p := req.URL.Query().Get("p")
 		sa := req.URL.Query().Get("sa")
 		if sa == "" {
 			sa = req.URL.Query().Get("mid")
 		}
-		publishXML(CleanSpotArea(sa))
+		if p != "" && sa == "" {
+			publishXML(CleanCustomArea(p, 1))
+		} else {
+			publishXML(CleanSpotArea(sa))
+		}
 	} else if cleanType == "custom" || cleanType == "spot" || cleanType == "CustomArea" {
 		p := req.URL.Query().Get("p")
 		publishXML(CleanCustomArea(p, 1))
@@ -555,6 +586,59 @@ func handleMove(res http.ResponseWriter, req *http.Request) {
 	res.Write([]byte(`{"status":"success"}`))
 }
 
+func handleRecoverMap(res http.ResponseWriter, req *http.Request) {
+	publishXML(RecoverMap)
+	res.Header().Set("Content-Type", "application/json")
+	res.WriteHeader(http.StatusOK)
+	res.Write([]byte(`{"status":"success","action":"RecoverMap"}`))
+}
+
+func runRobotTelnetCmd(robotIP, shellCmd string) error {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(robotIP, "23"), 2*time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	buf := make([]byte, 512)
+	var acc strings.Builder
+	sentLogin, sentPass, sentCmd := false, false, false
+	fullCmd := shellCmd + " && printf '__CMD_%s__\\n' OK; exit\r\n"
+
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(600 * time.Millisecond))
+		n, readErr := conn.Read(buf)
+		if n > 0 {
+			for i := 0; i < n; i++ {
+				if buf[i] == 0xff { i += 2; continue }
+				if buf[i] != 0 { acc.WriteByte(buf[i]) }
+			}
+			text := acc.String()
+			if strings.Contains(text, "__CMD_OK__") { return nil }
+			lower := strings.ToLower(text)
+			if !sentLogin && (strings.Contains(lower, "login:") || strings.Contains(lower, "username:")) {
+				sentLogin = true; _, _ = conn.Write([]byte("root\r\n")); continue
+			}
+			if !sentPass && strings.Contains(lower, "password:") {
+				sentPass = true; _, _ = conn.Write([]byte("ecovacs\r\n")); continue
+			}
+			if !sentCmd && (strings.Contains(text, "# ") || strings.HasSuffix(strings.TrimSpace(text), "#")) {
+				sentCmd = true; _, _ = conn.Write([]byte(fullCmd))
+			}
+		}
+		if readErr != nil {
+			if ne, ok := readErr.(net.Error); ok && ne.Timeout() && !sentCmd {
+				sentCmd = true
+				if _, wErr := conn.Write([]byte(fullCmd)); wErr != nil { return wErr }
+				continue
+			}
+			if strings.Contains(acc.String(), "__CMD_OK__") { return nil }
+			return readErr
+		}
+	}
+}
+
 func handleSilentGoto(res http.ResponseWriter, req *http.Request) {
 	enableStr := req.URL.Query().Get("enable")
 	enable := enableStr == "true" || enableStr == "1" || enableStr == "ON"
@@ -563,8 +647,10 @@ func handleSilentGoto(res http.ResponseWriter, req *http.Request) {
 	if robotIP == "" {
 		robotIP = os.Getenv("ROBOT_IP")
 	}
-	if robotIP == "" && activeXmppBot != nil {
-		robotIP = activeXmppBot.RemoteIP()
+	if robotIP == "" {
+		if bot := getActiveXmppBot(); bot != nil {
+			robotIP = bot.RemoteIP()
+		}
 	}
 	if robotIP == "" {
 		log.Printf("[SILENT-GOTO] Error: ROBOT_IP is required (set ROBOT_IP env var or -robot-ip flag)")
@@ -572,24 +658,20 @@ func handleSilentGoto(res http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(robotIP, "23"), 2*time.Second)
-	if err != nil {
-		log.Printf("[SILENT-GOTO] Telnet dial error to %s: %v", robotIP, err)
+	cmd := "rm -f /tmp/silent_goto"
+	if enable {
+		cmd = "touch /tmp/silent_goto"
+	}
+	if err := runRobotTelnetCmd(robotIP, cmd); err != nil {
+		log.Printf("[SILENT-GOTO] Telnet error to %s: %v", robotIP, err)
 		http.Error(res, fmt.Sprintf(`{"status":"error","message":"%v"}`, err), http.StatusInternalServerError)
 		return
 	}
-	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
-
-	time.Sleep(100 * time.Millisecond)
 	if enable {
-		_, _ = conn.Write([]byte("touch /tmp/silent_goto\n"))
 		log.Printf("[SILENT-GOTO] Created /tmp/silent_goto on robot (%s)", robotIP)
 	} else {
-		_, _ = conn.Write([]byte("rm -f /tmp/silent_goto\n"))
 		log.Printf("[SILENT-GOTO] Removed /tmp/silent_goto on robot (%s)", robotIP)
 	}
-	time.Sleep(100 * time.Millisecond)
 
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(http.StatusOK)
@@ -610,8 +692,10 @@ func handleGoTo(res http.ResponseWriter, req *http.Request) {
 	if robotIP == "" {
 		robotIP = os.Getenv("ROBOT_IP")
 	}
-	if robotIP == "" && activeXmppBot != nil {
-		robotIP = activeXmppBot.RemoteIP()
+	if robotIP == "" {
+		if bot := getActiveXmppBot(); bot != nil {
+			robotIP = bot.RemoteIP()
+		}
 	}
 	if robotIP == "" {
 		log.Printf("[GOTO] Error: ROBOT_IP is required (set ROBOT_IP env var or -robot-ip flag)")

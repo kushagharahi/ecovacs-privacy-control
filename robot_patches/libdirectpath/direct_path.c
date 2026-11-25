@@ -15,19 +15,26 @@
 #define GRID_H 400
 #define GRID_CELLS (GRID_W * GRID_H)
 
-/* Hard stack limits in stock setAstartWalkPoint02 (0x25b68.c):
+/* Hard stack limits in stock setAstartWalkPoint02 (0x25b68.c) & FUN_000257e0 (0x257e0.c):
  *   int aiStack_fcc[1000]   -> max 999 path cells
- *   float afStack_12ec[200] -> max 100 (x, y) waypoints
+ *   float afStack_12ec[200] -> max 100 (x, y) floats / ast_astarPathNode (.bss 200B -> 50 ints)
  */
 #define MAX_RAW_ASTAR_NODES 999
-#define MAX_WAYPOINTS       100
+#define MAX_WAYPOINTS       50
+#define MAX_ASTAR_POPS      120000
 
 /* Integer A* step costs (octile, 100mm/cell grid, OZMO 930 radius ~177mm) */
 #define COST_CARDINAL       10
 #define COST_DIAGONAL       14
-#define PENALTY_CLR_1      250   /* 100mm from obstacle: blocked in pass 0, emergency-only in pass 1 */
-#define PENALTY_CLR_2       80   /* 200mm from obstacle: doorway squeeze only */
-#define PENALTY_CLR_3       20   /* 300mm from obstacle: keeps DP corners off walls */
+#define PENALTY_CLR_1       160  /* 100mm from obstacle: tight doorway squeeze only */
+#define PENALTY_CLR_2       50   /* 200mm from obstacle: gentle wall margin */
+#define PENALTY_CLR_3       15   /* 300mm from obstacle: keeps DP corners off walls */
+#define PENALTY_DIAG_CORNER 20   /* Extra margin when cutting past a clr==1 diagonal corner */
+
+/* Gentler penalties when ast_astarInt400WitCoef runs with tight coef <= 0.6 (e.g. 0.5f explore/dock) */
+#define COEF_LOW_PEN_1      20
+#define COEF_LOW_PEN_2      5
+#define COEF_LOW_PEN_3      0
 
 typedef int (*astar_exe_G2G_NextRoom02_fn)(
     float dest_x, float dest_y,
@@ -39,6 +46,14 @@ typedef int (*astar_exe_G2G_NextRoom02_fn)(
 );
 
 typedef int (*ast_astarInt400_fn)(
+    int width, int height,
+    int start_grid_x, int start_grid_y,
+    int target_grid_x, int target_grid_y,
+    void *costmap
+);
+
+typedef int (*ast_astarInt400WitCoef_fn)(
+    float coef,
     int width, int height,
     int start_grid_x, int start_grid_y,
     int target_grid_x, int target_grid_y,
@@ -57,6 +72,7 @@ typedef void (*setAstartWalkPoint02_fn)(float dest_x, float dest_y);
 
 static astar_exe_G2G_NextRoom02_fn real_astar_exe_G2G_NextRoom02 = NULL;
 static ast_astarInt400_fn          real_ast_astarInt400          = NULL;
+static ast_astarInt400WitCoef_fn   real_ast_astarInt400WitCoef   = NULL;
 static findpathInt400_fn           real_findpathInt400           = NULL;
 static setAstartWalkPoint02_fn     real_setAstartWalkPoint02     = NULL;
 static int                        *p_ast_astarPathNodeCount      = NULL;
@@ -66,6 +82,10 @@ static pthread_mutex_t g_log_mutex   = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_init_mutex  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_astar_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_initialized = 0;
+
+/* TLS context propagated from ast_astarInt400WitCoef into findpathInt400 */
+static __thread int   g_witcoef_depth = 0;
+static __thread float g_witcoef_val   = 2.0f;
 
 typedef struct {
     uint32_t f;
@@ -145,6 +165,8 @@ static void ensure_symbols(void) {
                 (astar_exe_G2G_NextRoom02_fn)dlsym(handle, "astar_exe_G2G_NextRoom02");
             real_ast_astarInt400 =
                 (ast_astarInt400_fn)dlsym(handle, "ast_astarInt400");
+            real_ast_astarInt400WitCoef =
+                (ast_astarInt400WitCoef_fn)dlsym(handle, "ast_astarInt400WitCoef");
             real_findpathInt400 =
                 (findpathInt400_fn)dlsym(handle, "findpathInt400");
             real_setAstartWalkPoint02 =
@@ -154,24 +176,16 @@ static void ensure_symbols(void) {
             p_ast_path =
                 (int32_t **)dlsym(handle, "ast_path");
 
-            log_msg("[DIRECT-PATH] Symbols: G2G=%p astar=%p findpath=%p walk=%p nodeCnt=%p ast_path=%p\n",
+            log_msg("[DIRECT-PATH] Symbols: G2G=%p astar=%p witcoef=%p findpath=%p walk=%p nodeCnt=%p ast_path=%p\n",
                     (void *)real_astar_exe_G2G_NextRoom02,
                     (void *)real_ast_astarInt400,
+                    (void *)real_ast_astarInt400WitCoef,
                     (void *)real_findpathInt400,
                     (void *)real_setAstartWalkPoint02,
                     (void *)p_ast_astarPathNodeCount,
                     (void *)p_ast_path);
         } else {
             log_msg("[DIRECT-PATH] ERROR: dlopen(%s) failed: %s\n", ERGODIC_PLUGIN, dlerror());
-        }
-
-        if (!real_astar_exe_G2G_NextRoom02) {
-            real_astar_exe_G2G_NextRoom02 =
-                (astar_exe_G2G_NextRoom02_fn)dlsym(RTLD_NEXT, "astar_exe_G2G_NextRoom02");
-        }
-        if (!real_findpathInt400) {
-            real_findpathInt400 =
-                (findpathInt400_fn)dlsym(RTLD_NEXT, "findpathInt400");
         }
 
         g_initialized = 1;
@@ -210,14 +224,14 @@ static int ensure_workspace(void) {
 
 /* Matches libUnderErg::map_isPossibleFreeInt400 (0x19f28.c) */
 static inline int cell_is_free(const int32_t *map, int x, int y) {
-    if (x < 1 || x >= GRID_W || y < 1 || y >= GRID_H) return 0;
+    if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) return 0;
     int32_t v = map[x * GRID_H + y];
     return (v >= 1 && v <= 127);
 }
 
 /* Lazy-cached Chebyshev distance (in 100mm cells) to nearest obstacle, capped at 4 */
 static uint8_t cell_clearance(const int32_t *map, int x, int y) {
-    if (x < 1 || x >= GRID_W || y < 1 || y >= GRID_H) return 0;
+    if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) return 0;
     int32_t idx = x * GRID_H + y;
     if (g_ws.clr_gen[idx] == g_ws.cur_clr_gen) {
         return g_ws.clr_cache[idx];
@@ -248,16 +262,6 @@ static uint8_t cell_clearance(const int32_t *map, int x, int y) {
     g_ws.clr_gen[idx] = g_ws.cur_clr_gen;
     g_ws.clr_cache[idx] = clr;
     return clr;
-}
-
-static inline int near_endpoint(int x, int y, int sx, int sy, int gx, int gy) {
-    int dsx = x - sx; if (dsx < 0) dsx = -dsx;
-    int dsy = y - sy; if (dsy < 0) dsy = -dsy;
-    if (dsx <= 2 && dsy <= 2) return 1;
-
-    int dgx = x - gx; if (dgx < 0) dgx = -dgx;
-    int dgy = y - gy; if (dgy < 0) dgy = -dgy;
-    return (dgx <= 2 && dgy <= 2);
 }
 
 static inline uint32_t octile_h(int x, int y, int gx, int gy) {
@@ -317,8 +321,9 @@ static int32_t heap_pop(void) {
     return top;
 }
 
-/* Single A* pass. strict=1 blocks clr==1 (100mm from walls) away from start/goal. */
-static int run_astar_pass(const int32_t *map, int sx, int sy, int gx, int gy, int strict) {
+/* Single-pass soft-inflated 8-dir A* bounded by MAX_ASTAR_POPS. */
+static int run_astar_pass(const int32_t *map, int sx, int sy, int gx, int gy,
+                          uint32_t p1, uint32_t p2, uint32_t p3) {
     const int32_t start_idx = sx * GRID_H + sy;
     const int32_t goal_idx  = gx * GRID_H + gy;
 
@@ -337,7 +342,11 @@ static int run_astar_pass(const int32_t *map, int sx, int sy, int gx, int gy, in
     static const int dx[8] = {  0,  0, -1,  1, -1,  1, -1,  1 };
     static const int dy[8] = { -1,  1,  0,  0, -1, -1,  1,  1 };
 
+    int pops = 0;
     while (g_ws.heap_size > 0) {
+        if (++pops > MAX_ASTAR_POPS) {
+            return 0;
+        }
         int32_t cur = heap_pop();
         if (cur == goal_idx) return 1;
 
@@ -348,7 +357,7 @@ static int run_astar_pass(const int32_t *map, int sx, int sy, int gx, int gy, in
         for (int d = 0; d < 8; d++) {
             int nx = cx + dx[d];
             int ny = cy + dy[d];
-            if (nx < 1 || nx >= GRID_W || ny < 1 || ny >= GRID_H) continue;
+            if (nx < 0 || nx >= GRID_W || ny < 0 || ny >= GRID_H) continue;
 
             int32_t nidx = nx * GRID_H + ny;
             if (g_ws.seen_gen[nidx] == gen && g_ws.heap_pos[nidx] == -2) {
@@ -356,29 +365,23 @@ static int run_astar_pass(const int32_t *map, int sx, int sy, int gx, int gy, in
             }
 
             uint8_t clr = cell_clearance(map, nx, ny);
-            if (nidx != goal_idx) {
-                if (clr == 0) continue;
-                if (strict && clr == 1 && !near_endpoint(nx, ny, sx, sy, gx, gy)) {
-                    continue;
-                }
-            }
+            if (clr == 0) continue;
 
             /* Prevent diagonal corner-cutting using inflated clearance */
+            uint32_t diag_extra = 0;
             if (d >= 4) {
                 uint8_t c1 = cell_clearance(map, cx + dx[d], cy);
                 uint8_t c2 = cell_clearance(map, cx, cy + dy[d]);
                 if (c1 == 0 || c2 == 0) continue;
-                if (strict && (c1 == 1 || c2 == 1) && !near_endpoint(nx, ny, sx, sy, gx, gy)) {
-                    continue;
+                if (p1 > COEF_LOW_PEN_1 && (c1 == 1 || c2 == 1)) {
+                    diag_extra = PENALTY_DIAG_CORNER;
                 }
             }
 
-            uint32_t step = (d < 4) ? COST_CARDINAL : COST_DIAGONAL;
-            if (nidx != goal_idx) {
-                if (clr == 1)      step += PENALTY_CLR_1;
-                else if (clr == 2) step += PENALTY_CLR_2;
-                else if (clr == 3) step += PENALTY_CLR_3;
-            }
+            uint32_t step = (d < 4) ? COST_CARDINAL : (COST_DIAGONAL + diag_extra);
+            if (clr == 1)      step += p1;
+            else if (clr == 2) step += p2;
+            else if (clr == 3) step += p3;
 
             uint32_t new_g = cur_g + step;
 
@@ -387,7 +390,7 @@ static int run_astar_pass(const int32_t *map, int sx, int sy, int gx, int gy, in
                 g_ws.g_cost[nidx]   = new_g;
                 g_ws.parent[nidx]   = cur;
                 heap_push(nidx, new_g + octile_h(nx, ny, gx, gy));
-            } else if (new_g < g_ws.g_cost[nidx]) {
+            } else if (new_g < g_ws.g_cost[nidx] && g_ws.heap_pos[nidx] >= 0) {
                 g_ws.g_cost[nidx] = new_g;
                 g_ws.parent[nidx] = cur;
                 int pos = g_ws.heap_pos[nidx];
@@ -397,6 +400,25 @@ static int run_astar_pass(const int32_t *map, int sx, int sy, int gx, int gy, in
         }
     }
     return 0;
+}
+
+/* Collapse strictly colinear interior steps while preserving endpoints and turn vertices. */
+static int compress_colinear_path(int32_t *path, int len) {
+    if (len <= 2) return len;
+    int write = 1;
+    for (int i = 1; i < len - 1; i++) {
+        int px = path[write - 1] / GRID_H, py = path[write - 1] % GRID_H;
+        int cx = path[i] / GRID_H,         cy = path[i] % GRID_H;
+        int nx = path[i + 1] / GRID_H,     ny = path[i + 1] % GRID_H;
+        int dx1 = cx - px, dy1 = cy - py;
+        int dx2 = nx - cx, dy2 = ny - cy;
+        if (dx1 * dy2 == dy1 * dx2 && (dx1 * dx2 + dy1 * dy2) > 0) {
+            continue;
+        }
+        path[write++] = path[i];
+    }
+    path[write++] = path[len - 1];
+    return write;
 }
 
 /*
@@ -428,8 +450,34 @@ int findpathInt400(int width, int height,
         return 0;
     }
 
-    if (sx < 1 || sx >= GRID_W || sy < 1 || sy >= GRID_H ||
-        gx < 1 || gx >= GRID_W || gy < 1 || gy >= GRID_H) {
+    if (sx < 0 || sx >= GRID_W || sy < 0 || sy >= GRID_H ||
+        gx < 0 || gx >= GRID_W || gy < 0 || gy >= GRID_H) {
+        *out_count = 0;
+        return 0;
+    }
+
+    const int32_t *map = (const int32_t *)costmap;
+
+    if (sx == gx && sy == gy) {
+        int32_t *buf = (int32_t *)malloc(2 * sizeof(int32_t));
+        if (!buf) {
+            *out_count = 0;
+            return 0;
+        }
+        buf[0] = sx * GRID_H + sy;
+        buf[1] = -1;
+        pthread_mutex_lock(&g_astar_mutex);
+        if (*p_ast_path) {
+            free(*p_ast_path);
+        }
+        *p_ast_path = buf;
+        *out_count = 2;
+        pthread_mutex_unlock(&g_astar_mutex);
+        return 0;
+    }
+
+    /* Upfront goal check avoids full-map flood on unreachable/obstacle goals during zig-zag planning */
+    if (!cell_is_free(map, gx, gy)) {
         *out_count = 0;
         return 0;
     }
@@ -451,15 +499,14 @@ int findpathInt400(int width, int height,
         g_ws.cur_clr_gen = 1;
     }
 
-    const int32_t *map = (const int32_t *)costmap;
-
-    /* Pass 0: strict robot-radius inflation; Pass 1: relaxed fallback for tight doorways */
-    int found = run_astar_pass(map, sx, sy, gx, gy, 1);
-    if (!found) {
-        found = run_astar_pass(map, sx, sy, gx, gy, 0);
+    uint32_t p1 = PENALTY_CLR_1, p2 = PENALTY_CLR_2, p3 = PENALTY_CLR_3;
+    if (g_witcoef_depth > 0 && g_witcoef_val <= 0.6f) {
+        p1 = COEF_LOW_PEN_1;
+        p2 = COEF_LOW_PEN_2;
+        p3 = COEF_LOW_PEN_3;
     }
 
-    if (!found) {
+    if (!run_astar_pass(map, sx, sy, gx, gy, p1, p2, p3)) {
         *out_count = 0;
         pthread_mutex_unlock(&g_astar_mutex);
         return 0;
@@ -469,6 +516,11 @@ int findpathInt400(int width, int height,
     int len = 0;
     for (int32_t cur = goal_idx; cur != -1 && len < GRID_CELLS; cur = g_ws.parent[cur]) {
         g_ws.tmp_path[len++] = cur;
+    }
+
+    /* Compress colinear segments first if raw path exceeds stock aiStack_fcc[1000] limit */
+    if (len > MAX_RAW_ASTAR_NODES) {
+        len = compress_colinear_path(g_ws.tmp_path, len);
     }
 
     int out_len = (len <= MAX_RAW_ASTAR_NODES) ? len : MAX_RAW_ASTAR_NODES;
@@ -501,7 +553,47 @@ int findpathInt400(int width, int height,
 }
 
 /*
- * Intercept Gate-to-Gate planner (0x251c0.c) to bypass synthetic room doorways.
+ * Intercept ast_astarInt400WitCoef (0x3962c / Return / Reloc / Bump recovery)
+ * to propagate tight clearance coef via TLS into findpathInt400.
+ */
+int ast_astarInt400WitCoef(float coef,
+                           int width, int height,
+                           int start_grid_x, int start_grid_y,
+                           int target_grid_x, int target_grid_y,
+                           void *costmap)
+{
+    if (!is_medusa_process()) {
+        ensure_symbols();
+        if (real_ast_astarInt400WitCoef) {
+            return real_ast_astarInt400WitCoef(coef, width, height,
+                                               start_grid_x, start_grid_y,
+                                               target_grid_x, target_grid_y, costmap);
+        }
+        return 0;
+    }
+
+    ensure_symbols();
+    if (!real_ast_astarInt400WitCoef) {
+        return 0;
+    }
+
+    float prev_val = g_witcoef_val;
+    if (g_witcoef_depth == 0) {
+        g_witcoef_val = coef;
+    }
+    g_witcoef_depth++;
+    int ret = real_ast_astarInt400WitCoef(coef, width, height,
+                                          start_grid_x, start_grid_y,
+                                          target_grid_x, target_grid_y, costmap);
+    g_witcoef_depth--;
+    if (g_witcoef_depth == 0) {
+        g_witcoef_val = prev_val;
+    }
+    return ret;
+}
+
+/*
+ * Intercept Gate-to-Gate planner (0x251c0.c / FUN_000386b8) to bypass synthetic room doorways.
  */
 int astar_exe_G2G_NextRoom02(float dest_x, float dest_y,
                              int width, int height,

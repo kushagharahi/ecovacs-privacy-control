@@ -18,6 +18,7 @@ import (
 	"github.com/itchio/lzma"
 )
 
+var statusMu sync.RWMutex
 var BatteryLevel int = 0
 var ChargingState string = "Unknown"
 var VolumeLevel int = 0
@@ -191,14 +192,17 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 			handleGetTr(valuesMap)
 		case "CleanReport":
 			if clean, ok := valuesMap["clean"].(map[string]interface{}); ok {
+				statusMu.Lock()
 				if speedStr, ok := clean["-speed"].(string); ok {
 					CleanSpeed = speedStr
 				}
 				if stStr, ok := clean["-st"].(string); ok {
 					switch stStr {
 					case "h":
-						ChargingState = "Docked"
-					case "c":
+						if ChargingState != "SlotCharging" && ChargingState != "Charging" && ChargingState != "WireCharging" && ChargingState != "Going" && ChargingState != "Returning" {
+							ChargingState = "Idle"
+						}
+					case "c", "s":
 						ChargingState = "Cleaning"
 					case "p":
 						ChargingState = "Paused"
@@ -206,8 +210,10 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 						ChargingState = "Returning"
 					}
 				}
+				statusMu.Unlock()
 			}
 		case "GetBatteryInfo", "BatteryInfo":
+			statusMu.Lock()
 			if powerStr, ok := valuesMap["-power"].(string); ok {
 				BatteryLevel, _ = strconv.Atoi(powerStr)
 			} else if powerFloat, ok := valuesMap["-power"].(float64); ok {
@@ -221,19 +227,26 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 			} else if val, ok := valuesMap["value"].(float64); ok { // JSON representation
 				BatteryLevel = int(val)
 			}
-			log.Printf("[BATTERY] Received battery level: %d%%", BatteryLevel)
+			lvl := BatteryLevel
+			statusMu.Unlock()
+			log.Printf("[BATTERY] Received battery level: %d%%", lvl)
 		case "GetChargeState", "ChargeState":
+			statusMu.Lock()
 			if charge, ok := valuesMap["charge"].(map[string]interface{}); ok {
 				if typeStr, ok := charge["-type"].(string); ok {
-					ChargingState = typeStr
+					/* Firmware returns <charge type="Idle"/> whenever off dock, including during active clean */
+					if typeStr != "Idle" || (ChargingState != "Cleaning" && ChargingState != "Paused" && ChargingState != "Returning") {
+						ChargingState = typeStr
+					}
 				}
 			} else if isCharging, ok := valuesMap["isCharging"].(float64); ok { // JSON representation
 				if isCharging == 1 {
 					ChargingState = "Charging"
-				} else {
+				} else if ChargingState != "Cleaning" && ChargingState != "Paused" && ChargingState != "Returning" {
 					ChargingState = "Discharging"
 				}
 			}
+			statusMu.Unlock()
 		case "GetPos", "Pos":
 			// In Pos packets, if t="c", it indicates the charging dock position
 			if tType, ok := valuesMap["-t"].(string); ok && tType == "c" {
@@ -374,23 +387,31 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 			isTrue := (onVal == "1")
 			switch tVal {
 			case "b":
+				statusMu.Lock()
 				CarpetBoost = isTrue
-				log.Printf("[ONOFF] CarpetBoost = %v", CarpetBoost)
+				statusMu.Unlock()
+				log.Printf("[ONOFF] CarpetBoost = %v", isTrue)
 			case "l":
+				statusMu.Lock()
 				ContinuousClean = isTrue
-				log.Printf("[ONOFF] ContinuousClean = %v", ContinuousClean)
+				statusMu.Unlock()
+				log.Printf("[ONOFF] ContinuousClean = %v", isTrue)
 			case "s":
 				// Switch 's' in firmware is Silent Mode (1 = Mute ON, 0 = Mute OFF / VoiceReports active)
+				statusMu.Lock()
 				VoiceReports = !isTrue
-				log.Printf("[ONOFF] Silent Mode = %v (VoiceReports = %v)", isTrue, VoiceReports)
+				statusMu.Unlock()
+				log.Printf("[ONOFF] Silent Mode = %v (VoiceReports = %v)", isTrue, !isTrue)
 			case "g":
+				statusMu.Lock()
 				DNDEnabled = isTrue
-				log.Printf("[ONOFF] DNDEnabled = %v", DNDEnabled)
+				statusMu.Unlock()
+				log.Printf("[ONOFF] DNDEnabled = %v", isTrue)
 			default:
-				CarpetBoost = isTrue
-				log.Printf("[ONOFF] Fallback CarpetBoost = %v", CarpetBoost)
+				log.Printf("[ONOFF] Ignoring untyped/unknown OnOff response (t=%q, on=%v)", tVal, isTrue)
 			}
 		case "GetCleanSum", "CleanSum":
+			statusMu.Lock()
 			if cStr, ok := valuesMap["-c"].(string); ok {
 				TotalCleanCount, _ = strconv.Atoi(cStr)
 			}
@@ -400,18 +421,26 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 			if lStr, ok := valuesMap["-l"].(string); ok {
 				TotalCleanTime, _ = strconv.Atoi(lStr)
 			}
-			log.Printf("[CLEANSUM] Received clean sum: count=%d, area=%d m², time=%d s", TotalCleanCount, TotalCleanArea, TotalCleanTime)
+			cnt, area, tm := TotalCleanCount, TotalCleanArea, TotalCleanTime
+			statusMu.Unlock()
+			log.Printf("[CLEANSUM] Received clean sum: count=%d, area=%d m², time=%d s", cnt, area, tm)
 		case "GetSleepStatus":
 			if stStr, ok := valuesMap["-st"].(string); ok {
+				statusMu.Lock()
 				SleepStatus = stStr
+				statusMu.Unlock()
 			}
 		case "GetCleanSpeed":
 			if speedStr, ok := valuesMap["-speed"].(string); ok {
+				statusMu.Lock()
 				CleanSpeed = speedStr
+				statusMu.Unlock()
 			}
 		case "GetError":
 			if errsStr, ok := valuesMap["-errs"].(string); ok {
+				statusMu.Lock()
 				Errors = errsStr
+				statusMu.Unlock()
 			}
 		case "GetLifeSpan", "LifeSpan":
 			var val int = 100

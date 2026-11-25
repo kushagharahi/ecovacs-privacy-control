@@ -25,6 +25,7 @@ type XmppBotSession struct {
 	resource   string
 	jid        string
 	isReady    bool
+	closed     bool
 	writeMu    sync.Mutex
 	lastPingID int64
 }
@@ -34,10 +35,16 @@ var (
 	botLock       sync.RWMutex
 )
 
+func getActiveXmppBot() *XmppBotSession {
+	botLock.RLock()
+	defer botLock.RUnlock()
+	return activeXmppBot
+}
+
 func (s *XmppBotSession) IsReady() bool {
 	botLock.RLock()
 	defer botLock.RUnlock()
-	return s != nil && s.isReady
+	return s != nil && !s.closed && s.isReady
 }
 
 func (s *XmppBotSession) RemoteIP() string {
@@ -53,15 +60,52 @@ func (s *XmppBotSession) RemoteIP() string {
 	return addr
 }
 
-func (s *XmppBotSession) WriteRaw(data string) error {
+func (s *XmppBotSession) closeConn() {
+	if s == nil {
+		return
+	}
 	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	if s.conn == nil {
+	if !s.closed && s.conn != nil {
+		_ = s.conn.Close()
+		s.closed = true
+	}
+	s.writeMu.Unlock()
+
+	botLock.Lock()
+	if activeXmppBot == s {
+		activeXmppBot = nil
+	}
+	s.isReady = false
+	botLock.Unlock()
+}
+
+func (s *XmppBotSession) WriteRaw(data string) error {
+	if s == nil {
+		return fmt.Errorf("nil xmpp session")
+	}
+	s.writeMu.Lock()
+	if s.closed || s.conn == nil {
+		s.writeMu.Unlock()
 		return fmt.Errorf("connection closed")
 	}
+	_ = s.conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
 	log.Printf("[XMPP-OUT] %s", data)
 	_, err := s.conn.Write([]byte(data))
-	return err
+	if err != nil {
+		_ = s.conn.Close()
+		s.closed = true
+		s.writeMu.Unlock()
+
+		botLock.Lock()
+		if activeXmppBot == s {
+			activeXmppBot = nil
+		}
+		s.isReady = false
+		botLock.Unlock()
+		return err
+	}
+	s.writeMu.Unlock()
+	return nil
 }
 
 func (s *XmppBotSession) SendCommand(msg XMLMsg) error {
@@ -138,7 +182,8 @@ func (s *XmppBotSession) startPingLoop(stopChan <-chan struct{}) {
 			s.lastPingID++
 			pingStanza := fmt.Sprintf(`<iq from='ecouser.net' to='%s' id='ping_%d' type='get'><ping xmlns='urn:xmpp:ping'/></iq>`, s.jid, s.lastPingID)
 			if err := s.WriteRaw(pingStanza); err != nil {
-				log.Printf("[XMPP-PING] Failed to ping bot: %v", err)
+				log.Printf("[XMPP-PING] Failed to ping bot (closing dead session): %v", err)
+				s.closeConn()
 				return
 			}
 		}
@@ -201,6 +246,11 @@ func getAttr(attrs []xml.Attr, name string) string {
 func handleXmppClient(conn net.Conn, tlsConfig *tls.Config) {
 	defer conn.Close()
 
+	if tc, ok := conn.(*net.TCPConn); ok {
+		_ = tc.SetKeepAlive(true)
+		_ = tc.SetKeepAlivePeriod(15 * time.Second)
+	}
+
 	remoteAddr := conn.RemoteAddr().String()
 	log.Printf("[XMPP] New incoming connection from %s", remoteAddr)
 
@@ -211,6 +261,7 @@ func handleXmppClient(conn net.Conn, tlsConfig *tls.Config) {
 	}
 
 	// Phase 1: Plain TCP initial handshake (before STARTTLS)
+	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
 	buf := make([]byte, 4096)
 	n, err := conn.Read(buf)
 	if err != nil {
@@ -262,19 +313,17 @@ func handleXmppClient(conn net.Conn, tlsConfig *tls.Config) {
 		log.Printf("[XMPP-TLS] Handshake failed: %v", err)
 		return
 	}
+	bot.writeMu.Lock()
 	bot.conn = tlsConn
+	_ = tlsConn.SetDeadline(time.Time{})
+	bot.writeMu.Unlock()
 	log.Printf("[XMPP-TLS] Connection from %s successfully upgraded to TLS!", remoteAddr)
 
 	stopPingChan := make(chan struct{})
 	defer close(stopPingChan)
 
 	defer func() {
-		botLock.Lock()
-		if activeXmppBot == bot {
-			activeXmppBot = nil
-		}
-		bot.isReady = false
-		botLock.Unlock()
+		bot.closeConn()
 		log.Printf("[XMPP] Bot session ended for %s (%s)", bot.sn, remoteAddr)
 	}()
 
@@ -282,6 +331,7 @@ func handleXmppClient(conn net.Conn, tlsConfig *tls.Config) {
 
 	// Inside TLS loop
 	for {
+		_ = tlsConn.SetReadDeadline(time.Now().Add(90 * time.Second))
 		token, err := dec.Token()
 		if err != nil {
 			if err != io.EOF {
@@ -379,10 +429,18 @@ func handleXmppClient(conn net.Conn, tlsConfig *tls.Config) {
 					bot.WriteRaw(fmt.Sprintf(`<presence to="%s"> dummy </presence>`, bot.jid))
 
 					// Robot is fully ready!
+					var prevBot *XmppBotSession
 					botLock.Lock()
+					if activeXmppBot != nil && activeXmppBot != bot {
+						prevBot = activeXmppBot
+					}
 					bot.isReady = true
 					activeXmppBot = bot
 					botLock.Unlock()
+					if prevBot != nil {
+						log.Printf("[XMPP] Closing superseded session for %s", prevBot.jid)
+						prevBot.closeConn()
+					}
 
 					log.Printf("[XMPP] Robot %s is fully READY and online!", bot.jid)
 

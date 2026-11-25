@@ -29,15 +29,28 @@ import (
 
 var (
 	activeGoToCancel context.CancelFunc
+	activeGoToDone   chan struct{}
+	activeGoToID     uint64
 	activeGoToLock   sync.Mutex
 )
 
 func cancelActiveGoTo(httpCli *http.Client) {
 	activeGoToLock.Lock()
-	defer activeGoToLock.Unlock()
-	if activeGoToCancel != nil {
-		activeGoToCancel()
-		activeGoToCancel = nil
+	cancel := activeGoToCancel
+	done := activeGoToDone
+	activeGoToCancel = nil
+	activeGoToDone = nil
+	activeGoToID++
+	activeGoToLock.Unlock()
+
+	if cancel != nil {
+		cancel()
+		if done != nil {
+			select {
+			case <-done:
+			case <-time.After(500 * time.Millisecond):
+			}
+		}
 		if httpCli != nil {
 			callAPI(httpCli, "/clean?act=stop")
 			callAPI(httpCli, "/silentGoto?enable=0")
@@ -57,6 +70,8 @@ var (
 	cropOffsetLock sync.RWMutex
 	lastCropMinX   int = 192
 	lastCropMinY   int = 281
+	lastMapW       int = 256
+	lastMapH       int = 292
 )
 
 func getEnv(key, fallback string) string {
@@ -152,15 +167,19 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 	c.Subscribe(fmt.Sprintf("%s/command", topicPrefix), 0, func(_ mqtt.Client, m mqtt.Message) {
 		cmd := string(m.Payload())
 		log.Printf("[CMD] Received vacuum command: %s", cmd)
-		cancelActiveGoTo(httpCli)
 		switch cmd {
 		case "start", "clean":
+			cancelActiveGoTo(httpCli)
+			callAPI(httpCli, "/silentGoto?enable=0")
 			callAPI(httpCli, "/clean?act=start&type=auto")
 		case "pause":
+			cancelActiveGoTo(httpCli)
 			callAPI(httpCli, "/clean?act=pause")
 		case "stop":
+			cancelActiveGoTo(httpCli)
 			callAPI(httpCli, "/clean?act=stop")
 		case "return_to_base", "return_home":
+			cancelActiveGoTo(httpCli)
 			callAPI(httpCli, "/charge")
 		case "locate":
 			callAPI(httpCli, "/locate")
@@ -284,7 +303,6 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 
 	// Valetudo Map Capabilities: Room/Segment Cleaning
 	handleSegmentClean := func(_ mqtt.Client, m mqtt.Message) {
-		cancelActiveGoTo(httpCli)
 		lastSegmentCmdLock.Lock()
 		if time.Since(lastSegmentCmdTime) < 1*time.Second {
 			lastSegmentCmdLock.Unlock()
@@ -292,6 +310,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 		}
 		lastSegmentCmdTime = time.Now()
 		lastSegmentCmdLock.Unlock()
+		cancelActiveGoTo(httpCli)
 
 		var req struct {
 			SegmentIDs []string `json:"segment_ids"`
@@ -299,6 +318,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 		if err := json.Unmarshal(m.Payload(), &req); err == nil && len(req.SegmentIDs) > 0 {
 			sa := strings.Join(req.SegmentIDs, ",")
 			log.Printf("[CMD] Valetudo MapSegmentation Clean: %s", sa)
+			callAPI(httpCli, "/silentGoto?enable=0")
 			callAPI(httpCli, fmt.Sprintf("/clean?act=s&type=spot_area&sa=%s", sa))
 		}
 	}
@@ -307,7 +327,6 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 
 	// Valetudo Map Capabilities: Zone Cleaning
 	handleZoneClean := func(_ mqtt.Client, m mqtt.Message) {
-		cancelActiveGoTo(httpCli)
 		lastZoneCmdLock.Lock()
 		if time.Since(lastZoneCmdTime) < 1*time.Second {
 			lastZoneCmdLock.Unlock()
@@ -315,6 +334,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 		}
 		lastZoneCmdTime = time.Now()
 		lastZoneCmdLock.Unlock()
+		cancelActiveGoTo(httpCli)
 
 		log.Printf("[CMD] Valetudo Zone Clean payload: %s", string(m.Payload()))
 		var req struct {
@@ -329,6 +349,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 			z := req.Zones[0]
 			cropOffsetLock.RLock()
 			cMinX, cMinY := lastCropMinX, lastCropMinY
+			mapW, mapH := lastMapW, lastMapH
 			cropOffsetLock.RUnlock()
 			offsetValetudoX := (400 - cMinX) * 50
 			offsetValetudoY := (400 - cMinY) * 50
@@ -339,10 +360,10 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 			// Auto-detect coordinate scale:
 			// 1. Normalized ratio (0.0 .. 1.0)
 			if math.Max(math.Abs(paX), math.Abs(pcX)) <= 1.0 && math.Max(math.Abs(paY), math.Abs(pcY)) <= 1.0 {
-				paX = paX * 256.0 * 50.0
-				pcX = pcX * 256.0 * 50.0
-				paY = paY * 292.0 * 50.0
-				pcY = pcY * 292.0 * 50.0
+				paX = paX * float64(mapW) * 50.0
+				pcX = pcX * float64(mapW) * 50.0
+				paY = paY * float64(mapH) * 50.0
+				pcY = pcY * float64(mapH) * 50.0
 			} else if math.Max(math.Abs(paX), math.Abs(pcX)) <= 400 && math.Max(math.Abs(paY), math.Abs(pcY)) <= 400 {
 				// 2. Raw map pixel coordinates (0 .. 256, 0 .. 292)
 				paX = paX * 50.0
@@ -370,7 +391,8 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 			}
 
 			log.Printf("[CMD] Valetudo Zone Clean converted to robot physical mm: (%d,%d) to (%d,%d)", minX, minY, maxX, maxY)
-			callAPI(httpCli, fmt.Sprintf("/clean?act=s&type=SpotArea&p=%d,%d,%d,%d", minX, minY, maxX, maxY))
+			callAPI(httpCli, "/silentGoto?enable=0")
+			callAPI(httpCli, fmt.Sprintf("/clean?act=s&type=custom&p=%d,%d,%d,%d", minX, minY, maxX, maxY))
 		}
 	}
 	c.Subscribe(fmt.Sprintf("%s/ZoneCleaningCapability/start/set", topicPrefix), 0, handleZoneClean)
@@ -378,7 +400,6 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 
 	// Valetudo Map Capabilities: GoTo Pin Target
 	handleGoTo := func(_ mqtt.Client, m mqtt.Message) {
-		cancelActiveGoTo(httpCli)
 		lastGoToCmdLock.Lock()
 		if time.Since(lastGoToCmdTime) < 1*time.Second {
 			lastGoToCmdLock.Unlock()
@@ -386,6 +407,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 		}
 		lastGoToCmdTime = time.Now()
 		lastGoToCmdLock.Unlock()
+		cancelActiveGoTo(httpCli)
 
 		var req struct {
 			Coordinates struct {
@@ -396,14 +418,15 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 		if err := json.Unmarshal(m.Payload(), &req); err == nil {
 			cropOffsetLock.RLock()
 			cMinX, cMinY := lastCropMinX, lastCropMinY
+			mapW, mapH := lastMapW, lastMapH
 			cropOffsetLock.RUnlock()
 			offsetValetudoX := (400 - cMinX) * 50
 			offsetValetudoY := (400 - cMinY) * 50
 
 			x, y := req.Coordinates.X, req.Coordinates.Y
 			if math.Max(math.Abs(x), math.Abs(y)) <= 1.0 {
-				x = x * 256.0 * 50.0
-				y = y * 292.0 * 50.0
+				x = x * float64(mapW) * 50.0
+				y = y * float64(mapH) * 50.0
 			} else if math.Max(math.Abs(x), math.Abs(y)) <= 400 {
 				x = x * 50.0
 				y = y * 50.0
@@ -415,8 +438,12 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 
 			// Set up cancellable arrival watcher with 3-minute timeout
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			done := make(chan struct{})
 			activeGoToLock.Lock()
+			activeGoToID++
+			watcherID := activeGoToID
 			activeGoToCancel = cancel
+			activeGoToDone = done
 			activeGoToLock.Unlock()
 
 			// Enable silent goto on robot (suppresses voice prompt "Starting to clean" and keeps suction motors at 0 RPM)
@@ -424,11 +451,21 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 			time.Sleep(300 * time.Millisecond)
 
 			// On OZMO 930, navigate to target point via 500mm x 500mm zone centered at (rx, ry)
-			// libpathing.so intercepts mc_setAimPoint, bevels corners (+150mm), densifies waypoints, and applies zero-radius turns.
+			// libdirectpath.so intercepts findpathInt400 while libsilentgoto.so keeps suction/brushes off.
 			callAPI(httpCli, fmt.Sprintf("/clean?act=s&type=custom&p=%d,%d,%d,%d", rx-250, ry-250, rx+250, ry+250))
 
 			// Background arrival watcher: monitors robot's physical position via /status telemetry
-			go func(ctx context.Context, targetX, targetY int) {
+			go func(ctx context.Context, wID uint64, wDone chan struct{}, targetX, targetY int) {
+				defer func() {
+					activeGoToLock.Lock()
+					if activeGoToID == wID {
+						activeGoToCancel = nil
+						activeGoToDone = nil
+					}
+					activeGoToLock.Unlock()
+					close(wDone)
+				}()
+
 				ticker := time.NewTicker(500 * time.Millisecond)
 				defer ticker.Stop()
 
@@ -440,7 +477,11 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 				for {
 					select {
 					case <-ctx.Done():
-						log.Printf("[GOTO] Arrival watcher cancelled (context done)")
+						if ctx.Err() == context.Canceled {
+							log.Printf("[GOTO] Arrival watcher cancelled (external stop)")
+							return
+						}
+						log.Printf("[GOTO] Arrival watcher timed out (context done)")
 						callAPI(httpCli, "/clean?act=stop")
 						callAPI(httpCli, "/silentGoto?enable=0")
 						return
@@ -475,7 +516,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 								hasStartedMoving = true
 								hasConfirmedCleaning = true
 								log.Printf("[GOTO] Robot confirmed in Cleaning state, navigating towards (%d, %d)", targetX, targetY)
-							} else if distFromDock > 250 || (st.ChargingState != "SlotCharging" && st.ChargingState != "Charging" && st.ChargingState != "Docked") {
+							} else if distFromDock > 250 || (st.ChargingState != "SlotCharging" && st.ChargingState != "Charging" && st.ChargingState != "Docked" && st.ChargingState != "Idle") {
 								hasStartedMoving = true
 								log.Printf("[GOTO] Robot disengaged dock (state=%s, distFromDock=%.0f), heading towards (%d, %d)", st.ChargingState, distFromDock, targetX, targetY)
 							} else if time.Since(startTime) > 30*time.Second {
@@ -525,7 +566,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 						}
 					}
 				}
-			}(ctx, rx, ry)
+			}(ctx, watcherID, done, rx, ry)
 		}
 	}
 	c.Subscribe(fmt.Sprintf("%s/GoToLocationCapability/target/set", topicPrefix), 0, handleGoTo)
@@ -534,6 +575,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 
 	// Valetudo Spot Cleaning Capability (Pin & Clean)
 	handleSpotClean := func(_ mqtt.Client, m mqtt.Message) {
+		cancelActiveGoTo(httpCli)
 		log.Printf("[CMD] Valetudo SpotClean Target payload: %s", string(m.Payload()))
 		var req struct {
 			Coordinates struct {
@@ -544,14 +586,15 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 		if err := json.Unmarshal(m.Payload(), &req); err == nil {
 			cropOffsetLock.RLock()
 			cMinX, cMinY := lastCropMinX, lastCropMinY
+			mapW, mapH := lastMapW, lastMapH
 			cropOffsetLock.RUnlock()
 			offsetValetudoX := (400 - cMinX) * 50
 			offsetValetudoY := (400 - cMinY) * 50
 
 			x, y := req.Coordinates.X, req.Coordinates.Y
 			if math.Max(math.Abs(x), math.Abs(y)) <= 1.0 {
-				x = x * 256.0 * 50.0
-				y = y * 292.0 * 50.0
+				x = x * float64(mapW) * 50.0
+				y = y * float64(mapH) * 50.0
 			} else if math.Max(math.Abs(x), math.Abs(y)) <= 400 {
 				x = x * 50.0
 				y = y * 50.0
@@ -562,6 +605,7 @@ func subscribeTopics(c mqtt.Client, topicPrefix string, httpCli *http.Client) {
 			log.Printf("[CMD] Valetudo Spot Clean Pin Target: robot mm (%d, %d)", rx, ry)
 
 			// Clean a 1.0m x 1.0m zone centered at (rx, ry) with suction ON
+			callAPI(httpCli, "/silentGoto?enable=0")
 			callAPI(httpCli, fmt.Sprintf("/clean?act=s&type=custom&p=%d,%d,%d,%d", rx-500, ry-500, rx+500, ry+500))
 		}
 	}
@@ -727,6 +771,8 @@ func startMapLoop(c mqtt.Client, topicPrefix string, httpCli *http.Client, stopC
 				cropOffsetLock.Lock()
 				lastCropMinX = mapGrid.CropMinX
 				lastCropMinY = mapGrid.CropMinY
+				lastMapW = len(mapGrid.Grid)
+				lastMapH = len(mapGrid.Grid[0])
 				cropOffsetLock.Unlock()
 
 				if curStatus.ChargingState == "SlotCharging" || curStatus.ChargingState == "Charging" {

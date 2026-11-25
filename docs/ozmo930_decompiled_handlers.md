@@ -1327,3 +1327,43 @@ To achieve optimal, straight-line pathing without the risks associated with the 
   - **Task Guard**: Must explicitly assert `getCurrentTaskType() == 9` and check for `/tmp/silent_goto`. Must return immediately for Task 3 (`MdsStartReturnTask`), Task 0, and Task 1.
   - **Node Limit**: Total output points must not exceed 6 waypoints to prevent overflowing stack allocations in `afStack_1304` (`float afStack_1304[200]`).
   - **Memory Safety**: No writes to global binary offsets or external library state. Operates strictly as a pure array transform `(float *in_pts, int in_count) -> (float *out_pts, int out_count)` before calling original `mc_setAimPoint`.
+
+---
+
+## 15. Verified Firmware Call Graphs & Runtime Hook Reference (All Plugins)
+
+The symbols, ELF relocations, struct layouts, and IPC message formats below are verified directly from the ARMv7 firmware binaries (`libUnderErg.so`, `plug_medusa_plugin_task_ergodic.so`, `plug_mmi_periph.so`, `plug_medusa_plugin_task_relocation.so`, `plug_medusa_plugin_task_return.so`, `plug_medusa_plugin_map.so`, `plug_medusa_plugin_wifiHandler.so`, `libslam_decrypted.so`) so future work does not need to re-decompile them.
+
+### 15.1 Pathing Engine (`plug_medusa_plugin_task_ergodic.so` / `libUnderErg.so`)
+- **`astar_exe_G2G_NextRoom02` (`0x386b8`) is unreferenced dead code**: No callers exist in `plug_medusa_plugin_task_ergodic.so`. All real pathfinding calls enter `findpathInt400` (`0x24c24` via `R_ARM_JUMP_SLOT` PLT) through:
+  - `ast_astarInt400`: `0x383a4`, `0x3f8a0`, `0x37f9c`, `0x3ef84`
+  - `ast_astarInt400WitCoef`: `0x3962c` (Task `3` Return to Dock), `0x424ec` (dynamic relocation), `0x380c8` (bump recovery)
+- **400×400 Navigation Grid & Hard Limits**:
+  - `map_isPossibleFreeInt400` (`libUnderErg.so` at `0x19f28`): checks `map[x * 400 + y]` in `[1, 127]` over valid grid indices `[0, 399]` (`100 mm/cell`).
+  - `ast_astarPathNode` (`.bss`, `0x257e0`): fixed `200`-byte buffer (`50` ints max).
+  - `setAstartWalkPoint02` (`0x25b68`): `int aiStack_fcc[1000]`, capping raw reverse `ast_path` nodes at `999` cells plus `-1` sentinel (`out_count <= 1000`).
+- **8× Per-Tick Zig-Zag Calls (`0x3e394`)**: During room cleaning, `0x3e394` invokes `0x3ef84` -> `ast_astarInt400` -> `findpathInt400` up to 8 times inside a single 20 ms tick. `libdirectpath.so` therefore must use a single-pass A* bounded by a node expansion cap (`MAX_ASTAR_POPS`), reject obstacle goals (`!cell_is_free(gx, gy)`) upfront before searching, and distinguish tight `coef <= 0.6f` callers via `ast_astarInt400WitCoef`.
+
+### 15.2 Relocation, Map Preservation & Reset Paths (`plug_mmi_periph.so` / `task_relocation` / `map`)
+- **All `mmi_periph` Hooks Use `R_ARM_JUMP_SLOT`**:
+  - `MdsLoadAndAnalyzeMap` (`0x26088`), `MdsStartReloadMap` (`0x24540`), `MdsresetAll` (`0x24620`), `MdsStopCurTask` (`MdsStopCurTask`), `MDSMotorControl` (`0x29724`), `MDSReportTaskState`, and `onMainTaskFinished` (`0x24aa0`) are all invoked through `.plt` / GOT inside `plug_mmi_periph.so` (no `DT_SYMBOLIC`), allowing `LD_PRELOAD` interposition after resolving originals with `dlopen(..., RTLD_NOLOAD | RTLD_NOW)` + `dlsym`.
+- **`TASK_MAN` cmd `5` & `onMainTaskFinished` (`0x24aa0`)**:
+  - `TASK_MAN` cmd `5` payload points to `{ int reloc_type; int status; }` where `reloc_type` is `0` (`Lift`/`DuringRunning`), `1` (`OnCharger`), `2` (`Reload`), `3` (`GoCharger`), and `status` is `0` (`Start`), `1` (`Ok`), `2` (`Fail`).
+  - Inside `onMainTaskFinished(ctx, task, msg)` for Task `6` (`*(int *)(*task + 0x2c) == 6`):
+    - `reloc_type` is `*(int *)task[1]`, and completion flag is `**(int **)((char *)msg + 4)` (`0` = fail, `1` = ok).
+    - **Lift/Running failure (`reloc_type == 0`, fail)**: `FUN_00014810` / `FUN_00014768` in `plug_medusa_plugin_task_relocation.so` already ran `SLAM(7)` and zeroed `WHEEL`/`LDS` to a `(0,0,0)` temporary submap while exploring. Stock `onMainTaskFinished` then calls `MdsStopCurTask`, `MdsresetAll(ctx, 0)`, and auto-launches Task `0` (`Auto Clean` from `(0,0,0)`) or `MdsStartExploreReturnTask`. Calling `MdsStopCurTask`, `MDSMotorControl`, `MdsLoadAndAnalyzeMap`, `MDSReportTaskState`, and returning `0` stops safely and restores the saved map/dock frame without starting an unwanted clean.
+    - **Reload final failure (`reloc_type == 2`, fail after `*(int *)(ctx + 0x174) >= 3`)**: When map-building flag `*(int *)(ctx + 0x14c) != 0`, stock `onMainTaskFinished` invokes `MdsSaveMapToFs`, which overwrites `/data/FILES/restoreMap.bin`. Clearing `*(ctx + 0x14c)` and reloading via `MdsLoadAndAnalyzeMap` prevents flash corruption.
+    - **User `ClearMap` vs Auto-Wipe**: Intentional `<ctl td="ClearMap"/>` calls `MdsresetAll(ctx, 1)` (`wipe_flash != 0` at `0x2982c`), whereas automatic resets call `MdsresetAll(ctx, 0)` (`wipe_flash == 0`).
+- **`MAP` cmd `3` Multiplexer (`plug_medusa_plugin_map.so`, `0x158e0`)**:
+  - Subcommand is `*(int *)payload[1]`. Only `subcmd == 4` is `clearWifiMap`. Other subcommands handle tile queries (`1..3`, `0xb..0xd`), map compression/update (`5`, `8`), `saveWifiMap` (`9`), `restoreWifiMap` (`10`), and relocation validity sync `setRelocationState` (`0xe`).
+- **`CtlCmd` Struct & `SLAM` IPC**:
+  - `"CtlCmd"` broadcasts pass `{ char *from; char *to; iks *node; }` (not a raw XML string), inspected via `iks_find_attrib(node, "td")`.
+  - `"SLAM"` commands `0..10` dispatch to the `lib_ecoLocalization` table (`0x1000c` in `libslam_decrypted.so`); `SLAM(5)` disables `LDSPIC`, `SLAM(6)` enables `LDSPIC`, `SLAM(7)` calls `resetEcoLocalization` (required by `FUN_00014768` during valid `Lift` relocation), `SLAM(10)` reloads the map, and outbound `SLAM(4)` signals wheel slip to `plug_medusa_plugin_task_ergodic.so` (`0x28944`).
+
+### 15.3 Audio Event IDs (`plug_mmi_periph.so`, `0x31ff8` & `0x3239c`) & XMPP Reporting (`wifiHandler`)
+- **`MdsMmiaudioplayerProcess` (`0x3239c`) `"PLAYER"` payload**: `{ uint32_t cmd; void *arg; }` where `cmd == 0` gets language list, `cmd == 1` calls `MdsPlayAudio(ctx, *(uint32_t *)arg)`, `cmd == 2` sets language, `cmd == 3` gets active language.
+- **`MdsPlayAudio` (`0x32270` -> `0x31ff8`) Event-to-Sound Mapping**:
+  - `0x0e` -> `"86"`, `0x13` -> `"82"`, `0x14` -> `"81"`, `0x15` -> `"80"` (*I am starting the clean*), `0x16` -> `"79"`, `0x18` -> `"63"`, `0x1b` -> `"24"` (*Unable to locate*), `0x1d` -> `"65"`, `0x25` -> `"55"` (*I am relocating*), `0x26` -> `"71"`, `0x28` -> `"74"` (*Difficult to locate*), `0x2d` -> `"75"`.
+- **Active Clean State Reporting (`0x1c27c`, `0x18964`, `0x166ec`)**:
+  - Firmware `CleanReport` and `GetCleanState` emit `st="s"` while cleaning is active (`st="p"` paused, `st="r"` returning, `st="h"` idle/halted).
+  - `GetChargeState` returns `<charge type="Idle"/>` whenever the robot is off the dock (including during active cleaning), so controllers must not let `Idle` from `GetChargeState` overwrite `Cleaning` / `Paused` / `Returning`.

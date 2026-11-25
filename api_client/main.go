@@ -22,8 +22,8 @@ var (
 )
 
 func publishXML(msg XMLMsg) {
-	if activeXmppBot != nil && activeXmppBot.IsReady() {
-		if err := activeXmppBot.SendCommand(msg); err != nil {
+	if bot := getActiveXmppBot(); bot != nil && bot.IsReady() {
+		if err := bot.SendCommand(msg); err != nil {
 			log.Printf("[PUBLISH-XMPP] Error: %v", err)
 		}
 		return
