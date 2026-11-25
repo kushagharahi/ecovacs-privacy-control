@@ -762,12 +762,14 @@ func startMapLoop(c mqtt.Client, topicPrefix string, httpCli *http.Client, stopC
 
 		var vMap *valetudo.ValetudoMap
 		var img image.Image
+		var roomPolygons map[string][][2]int
 		usedRawGrid := false
 
 		// 1. Try to fetch high-fidelity raw grid directly from controller
 		if gResp, err := httpCli.Get(*controllerURL + "/mapGrid"); err == nil {
 			var mapGrid ecovacs.MapGridResponse
 			if json.NewDecoder(gResp.Body).Decode(&mapGrid) == nil && len(mapGrid.Grid) > 0 {
+				roomPolygons = mapGrid.RoomPolygons
 				cropOffsetLock.Lock()
 				lastCropMinX = mapGrid.CropMinX
 				lastCropMinY = mapGrid.CropMinY
@@ -923,8 +925,13 @@ func startMapLoop(c mqtt.Client, topicPrefix string, httpCli *http.Client, stopC
 			"robot_angle":   curStatus.RobotAngle,
 		}
 		if attrJSON, err := json.Marshal(attrPayload); err == nil {
-			c.Publish(fmt.Sprintf("%s/map_attributes", topicPrefix), 0, false, attrJSON)
 			c.Publish(fmt.Sprintf("%s/vacuum_attributes", topicPrefix), 0, false, attrJSON)
+		}
+		if rooms := valetudo.BuildCameraRooms(vMap, roomPolygons); len(rooms) > 0 {
+			attrPayload["rooms"] = rooms
+		}
+		if attrJSON, err := json.Marshal(attrPayload); err == nil {
+			c.Publish(fmt.Sprintf("%s/map_attributes", topicPrefix), 0, false, attrJSON)
 		}
 	}
 

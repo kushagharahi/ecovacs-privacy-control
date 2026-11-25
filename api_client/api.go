@@ -80,6 +80,7 @@ type MapGridResponse struct {
 	RobotAngle          int                  `json:"robot_angle"`
 	Rooms               []string             `json:"rooms"`
 	RoomNames           map[string]string    `json:"room_names"`
+	RoomPolygons        map[string][][2]int  `json:"room_polygons,omitempty"`
 	VirtualRestrictions []VirtualRestriction `json:"virtual_restrictions"`
 	PathPoints          []PathPoint          `json:"path_points"`
 	Grid                [][]byte             `json:"grid"`
@@ -140,6 +141,22 @@ func handleMapGrid(res http.ResponseWriter, req *http.Request) {
 	copy(pts, DiscoveredPath)
 	pathLock.Unlock()
 
+	var rPolys map[string][][2]int
+	if len(grid) > 0 {
+		spotAreasLock.Lock()
+		if len(spotAreaPolygons) > 0 {
+			rPolys = make(map[string][][2]int, len(spotAreaPolygons))
+			for rId, poly := range spotAreaPolygons {
+				cropped := make([][2]int, len(poly))
+				for i, pt := range poly {
+					cropped[i] = [2]int{pt[0] - minX, pt[1] - minY}
+				}
+				rPolys[strconv.Itoa(rId)] = cropped
+			}
+		}
+		spotAreasLock.Unlock()
+	}
+
 	resp := MapGridResponse{
 		Width:               w,
 		Height:              h,
@@ -155,6 +172,7 @@ func handleMapGrid(res http.ResponseWriter, req *http.Request) {
 		RobotAngle:          robotAngle,
 		Rooms:               roomsCopy,
 		RoomNames:           rNames,
+		RoomPolygons:        rPolys,
 		VirtualRestrictions: restrs,
 		PathPoints:          pts,
 		Grid:                grid,

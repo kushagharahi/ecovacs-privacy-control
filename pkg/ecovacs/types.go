@@ -75,6 +75,7 @@ type MapGridResponse struct {
 	RobotAngle          int                  `json:"robot_angle"`
 	Rooms               []string             `json:"rooms"`
 	RoomNames           map[string]string    `json:"room_names"`
+	RoomPolygons        map[string][][2]int  `json:"room_polygons,omitempty"`
 	VirtualRestrictions []VirtualRestriction `json:"virtual_restrictions"`
 	PathPoints          []PathPoint          `json:"path_points"`
 	Grid                [][]byte             `json:"grid"`

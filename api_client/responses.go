@@ -50,10 +50,22 @@ type PathPoint struct {
 	Connected bool `json:"connected"` // true = connected to previous point
 }
 
+type pendingTraceReq struct {
+	id          string
+	trid        int
+	tf          int
+	tt          int
+	requestedAt time.Time
+}
+
 var (
-	pathLock       sync.Mutex
-	DiscoveredPath = []PathPoint{}
-	ActiveTrID     = 0
+	pathLock         sync.Mutex
+	DiscoveredPath   = []PathPoint{}
+	ActiveTrID       = 0
+	tracePointsByIdx = make(map[int]PathPoint)
+	pendingGetTr     = make(map[string]pendingTraceReq)
+	traceReqSeq      int
+	sendTraceCmd     = publishXML
 )
 
 var RobotPosX int = 0
@@ -186,7 +198,7 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 			handlePullMResponse(valuesMap)
 		case "GetTrM", "TrM":
 			log.Printf("[PATH] TrM response: %+v", valuesMap)
-			handleTrM(valuesMap)
+			handleTrM(valuesMap, cmdName == "TrM")
 		case "GetTr", "trace":
 			log.Printf("[PATH] GetTr response received")
 			handleGetTr(valuesMap)
@@ -1032,37 +1044,149 @@ func (mapData MapData) MapDataColorMapping() color.RGBA {
 var pieceIndex = 0
 var mapInfo = MapInfo{}
 
-func handleTrM(valuesMap map[string]interface{}) {
-	tridStr, _ := valuesMap["-trid"].(string)
-	cStr, _ := valuesMap["-c"].(string)
-	if tridStr == "" {
-		if ctlMap, ok := valuesMap["ctl"].(map[string]interface{}); ok {
-			tridStr, _ = ctlMap["-trid"].(string)
-			cStr, _ = ctlMap["-c"].(string)
+func resetTraceSessionLocked(trid int) {
+	ActiveTrID = trid
+	tracePointsByIdx = make(map[int]PathPoint)
+	pendingGetTr = make(map[string]pendingTraceReq)
+	DiscoveredPath = []PathPoint{}
+}
+
+func rebuildDiscoveredPathLocked() {
+	if len(tracePointsByIdx) == 0 {
+		DiscoveredPath = []PathPoint{}
+		return
+	}
+	maxIdx := -1
+	for idx := range tracePointsByIdx {
+		if idx > maxIdx {
+			maxIdx = idx
 		}
 	}
-	trid, _ := strconv.Atoi(tridStr)
-	c, _ := strconv.Atoi(cStr)
-	log.Printf("[PATH] Received TrM metadata: trid=%d, count=%d", trid, c)
-	if trid > 0 && c > 0 {
-		ActiveTrID = trid
-		to := c - 1
-		if to > 199 {
-			to = 199
+	pts := make([]PathPoint, 0, len(tracePointsByIdx))
+	for i := 0; i <= maxIdx; i++ {
+		if pt, ok := tracePointsByIdx[i]; ok {
+			pts = append(pts, pt)
 		}
-		publishXML(GetTr(trid, 0, to))
+	}
+	DiscoveredPath = pts
+}
+
+func parseIntAttr(m map[string]interface{}, key string) (int, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	switch val := v.(type) {
+	case string:
+		n, err := strconv.Atoi(val)
+		return n, err == nil
+	case float64:
+		return int(val), true
+	case int:
+		return val, true
+	}
+	return 0, false
+}
+
+func isTraceIndexCoveredLocked(trid, idx int) bool {
+	if _, ok := tracePointsByIdx[idx]; ok {
+		return true
+	}
+	for _, req := range pendingGetTr {
+		if req.trid == trid && idx >= req.tf && idx <= req.tt {
+			return true
+		}
+	}
+	return false
+}
+
+func handleTrM(valuesMap map[string]interface{}, isLivePush bool) {
+	ctlMap := valuesMap
+	if nested, ok := valuesMap["ctl"].(map[string]interface{}); ok {
+		ctlMap = nested
+	}
+	trid, _ := parseIntAttr(ctlMap, "-trid")
+	c, _ := parseIntAttr(ctlMap, "-c")
+	log.Printf("[PATH] Received TrM metadata: trid=%d, count=%d", trid, c)
+	if trid <= 0 || c <= 0 {
+		return
+	}
+
+	const maxTraceChunk = 200
+	now := time.Now()
+	var toSend []pendingTraceReq
+
+	pathLock.Lock()
+	if trid != ActiveTrID {
+		resetTraceSessionLocked(trid)
+	}
+	for id, req := range pendingGetTr {
+		if req.trid != trid || now.Sub(req.requestedAt) > 15*time.Second {
+			delete(pendingGetTr, id)
+		}
+	}
+
+	skipTip := false
+	if isLivePush && c > 1 {
+		if _, hasTip := tracePointsByIdx[c-1]; !hasTip {
+			allPrior := true
+			for i := 0; i < c-1; i++ {
+				if !isTraceIndexCoveredLocked(trid, i) {
+					allPrior = false
+					break
+				}
+			}
+			skipTip = allPrior
+		}
+	}
+
+	if !skipTip {
+		for idx := 0; idx < c; {
+			if isTraceIndexCoveredLocked(trid, idx) {
+				idx++
+				continue
+			}
+			tf := idx
+			tt := idx
+			for tt+1 < c && tt-tf+1 < maxTraceChunk && !isTraceIndexCoveredLocked(trid, tt+1) {
+				tt++
+			}
+			traceReqSeq++
+			reqID := strconv.Itoa(900000 + (traceReqSeq % 99999))
+			req := pendingTraceReq{
+				id:          reqID,
+				trid:        trid,
+				tf:          tf,
+				tt:          tt,
+				requestedAt: now,
+			}
+			pendingGetTr[reqID] = req
+			toSend = append(toSend, req)
+			idx = tt + 1
+		}
+	}
+	pathLock.Unlock()
+
+	if len(toSend) == 1 {
+		sendTraceCmd(GetTrWithID(toSend[0].id, trid, toSend[0].tf, toSend[0].tt))
+	} else if len(toSend) > 1 {
+		go func(reqs []pendingTraceReq) {
+			for i, r := range reqs {
+				if i > 0 {
+					time.Sleep(50 * time.Millisecond)
+				}
+				sendTraceCmd(GetTrWithID(r.id, r.trid, r.tf, r.tt))
+			}
+		}(toSend)
 	}
 }
 
 func handleGetTr(valuesMap map[string]interface{}) {
-	var trStr string
-	if tr, ok := valuesMap["-tr"].(string); ok {
-		trStr = tr
-	} else if ctlMap, ok := valuesMap["ctl"].(map[string]interface{}); ok {
-		if tr, ok := ctlMap["-tr"].(string); ok {
-			trStr = tr
-		}
+	ctlMap := valuesMap
+	if nested, ok := valuesMap["ctl"].(map[string]interface{}); ok {
+		ctlMap = nested
 	}
+	trStr, _ := ctlMap["-tr"].(string)
 	if trStr == "" {
 		return
 	}
@@ -1073,10 +1197,41 @@ func handleGetTr(valuesMap map[string]interface{}) {
 		return
 	}
 
+	idStr, _ := ctlMap["-id"].(string)
+	trid, _ := parseIntAttr(ctlMap, "-trid")
+	tf, hasTF := parseIntAttr(ctlMap, "-tf")
+
 	pathLock.Lock()
-	DiscoveredPath = append(DiscoveredPath, points...)
+	fromPending := false
+	if idStr != "" {
+		if req, ok := pendingGetTr[idStr]; ok {
+			delete(pendingGetTr, idStr)
+			trid = req.trid
+			tf = req.tf
+			hasTF = true
+			fromPending = true
+		}
+	}
+
+	if trid > 0 && trid != ActiveTrID {
+		if fromPending && ActiveTrID != 0 {
+			pathLock.Unlock()
+			return
+		}
+		resetTraceSessionLocked(trid)
+	}
+
+	if hasTF {
+		for i, pt := range points {
+			tracePointsByIdx[tf+i] = pt
+		}
+		rebuildDiscoveredPathLocked()
+	} else {
+		DiscoveredPath = append(DiscoveredPath, points...)
+	}
+	total := len(DiscoveredPath)
 	pathLock.Unlock()
-	log.Printf("[PATH] Parsed %d trace points (total=%d)", len(points), len(DiscoveredPath))
+	log.Printf("[PATH] Parsed %d trace points (total=%d)", len(points), total)
 }
 
 func decodeTracePoints(b64Str string) ([]PathPoint, error) {

@@ -787,13 +787,21 @@ var GetTrM XMLMsg = XMLMsg{
 }
 
 func GetTr(trid int, tf int, tt int) XMLMsg {
+	return GetTrWithID("", trid, tf, tt)
+}
+
+func GetTrWithID(reqID string, trid int, tf int, tt int) XMLMsg {
+	opts := mxj.Map{
+		"-trid": strconv.Itoa(trid),
+		"-tf":   strconv.Itoa(tf),
+		"-tt":   strconv.Itoa(tt),
+	}
+	if reqID != "" {
+		opts["-id"] = reqID
+	}
 	return XMLMsg{
 		cmdName: "GetTr",
-		cmdOpts: mxj.Map{
-			"-trid": strconv.Itoa(trid),
-			"-tf":   strconv.Itoa(tf),
-			"-tt":   strconv.Itoa(tt),
-		},
+		cmdOpts: opts,
 	}
 }
 

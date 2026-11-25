@@ -60,6 +60,19 @@ type EntityMetaData struct {
 	Angle int `json:"angle,omitempty"`
 }
 
+// CameraRoom represents one room entry in the format expected by
+// lovelace-xiaomi-vacuum-map-card's camera attributes.rooms parser.
+type CameraRoom struct {
+	Name    string   `json:"name,omitempty"`
+	X       *int     `json:"x,omitempty"`
+	Y       *int     `json:"y,omitempty"`
+	Outline [][2]int `json:"outline,omitempty"`
+	X0      *int     `json:"x0,omitempty"`
+	Y0      *int     `json:"y0,omitempty"`
+	X1      *int     `json:"x1,omitempty"`
+	Y1      *int     `json:"y1,omitempty"`
+}
+
 // ValetudoState values conforming to Home Assistant / Valetudo state schema
 type ValetudoState string
 

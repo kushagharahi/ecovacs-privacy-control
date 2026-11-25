@@ -547,9 +547,9 @@ func handleIqStanza(bot *XmppBotSession, iq Stanza) {
 			cmdName = "GetLifeSpan"
 		} else if (strings.Contains(rawString, " v='") || strings.Contains(rawString, " v=\"")) && !strings.Contains(rawString, "<volume") && !strings.Contains(rawString, "<battery") && !strings.Contains(rawString, "<charge") && !strings.Contains(rawString, "<clean") && !strings.Contains(rawString, "td=") {
 			cmdName = "GetWaterPermeability"
-		} else if strings.Contains(rawString, "trid") && strings.Contains(rawString, "tr=") {
+		} else if strings.Contains(rawString, " tr='") || strings.Contains(rawString, " tr=\"") {
 			cmdName = "GetTr"
-		} else if strings.Contains(rawString, "trid") && (strings.Contains(rawString, "GetTrM") || strings.Contains(rawString, "TrM")) {
+		} else if strings.Contains(rawString, "trid") && (strings.Contains(rawString, "GetTrM") || strings.Contains(rawString, "TrM") || strings.Contains(rawString, " c='") || strings.Contains(rawString, " c=\"")) {
 			cmdName = "GetTrM"
 		} else if strings.Contains(rawString, " p='") && len(rawString) > 200 {
 			// Base64 LZMA map piece payload

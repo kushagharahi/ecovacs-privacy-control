@@ -654,3 +654,66 @@ func NewEmptyValetudoMap(robotSN string) *ValetudoMap {
 		Entities:  make([]MapEntity, 0),
 	}
 }
+
+// BuildCameraRooms converts Valetudo segment layers and optional cropped room polygons
+// into the camera attributes.rooms map consumed by lovelace-xiaomi-vacuum-map-card.
+func BuildCameraRooms(vMap *ValetudoMap, roomPolygons map[string][][2]int) map[string]CameraRoom {
+	rooms := make(map[string]CameraRoom)
+	if vMap != nil {
+		for _, layer := range vMap.Layers {
+			if layer.Type != "segment" || layer.MetaData.SegmentID == "" {
+				continue
+			}
+			id := layer.MetaData.SegmentID
+			room := CameraRoom{Name: layer.MetaData.Name}
+
+			if len(layer.Pixels) >= 2 {
+				var sumX, sumY int
+				count := len(layer.Pixels) / 2
+				for i := 0; i+1 < len(layer.Pixels); i += 2 {
+					sumX += layer.Pixels[i]
+					sumY += layer.Pixels[i+1]
+				}
+				cx, cy := sumX/count, sumY/count
+				room.X, room.Y = &cx, &cy
+			}
+
+			if poly := roomPolygons[id]; len(poly) >= 3 {
+				room.Outline = poly
+			} else if len(layer.Pixels) >= 2 {
+				x0, y0 := layer.Dimensions.X.Min, layer.Dimensions.Y.Min
+				x1, y1 := layer.Dimensions.X.Max, layer.Dimensions.Y.Max
+				room.X0, room.Y0, room.X1, room.Y1 = &x0, &y0, &x1, &y1
+			} else {
+				continue
+			}
+
+			rooms[id] = room
+		}
+	}
+
+	// Include any discovered polygons not yet rasterized onto the grid.
+	for id, poly := range roomPolygons {
+		if _, exists := rooms[id]; exists || len(poly) < 3 {
+			continue
+		}
+		var sumX, sumY int
+		for _, pt := range poly {
+			sumX += pt[0]
+			sumY += pt[1]
+		}
+		cx, cy := sumX/len(poly), sumY/len(poly)
+		name := fmt.Sprintf("Room %s", id)
+		if idNum, err := strconv.Atoi(id); err == nil && idNum >= 0 && idNum < 26 {
+			name = fmt.Sprintf("Room %c", 'A'+idNum)
+		}
+		rooms[id] = CameraRoom{
+			Name:    name,
+			X:       &cx,
+			Y:       &cy,
+			Outline: poly,
+		}
+	}
+
+	return rooms
+}
