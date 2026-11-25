@@ -1,4 +1,4 @@
-package valetudo
+package habridge
 
 import (
 	"encoding/json"
@@ -18,7 +18,7 @@ type HADeviceInfo struct {
 	SwVersion    string   `json:"sw_version"`
 }
 
-// PublishHADiscovery publishes all Home Assistant MQTT Auto-Discovery payloads for the OZMO 930
+// PublishHADiscovery publishes all Home Assistant MQTT Auto-Discovery payloads for the OZMO 930.
 func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) error {
 	// First, clear old discovery topics so entity names stay clean
 	ClearOldHADiscovery(client, haPrefix, sn)
@@ -45,8 +45,8 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 	}
 	publishJSON(client, fmt.Sprintf("%s/vacuum/ozmo_930/config", haPrefix), vacuumConfig)
 
-	// 2. Camera Entity for valetudo-map-card (creates camera.ozmo_930_map_data)
-	// Serves a PNG with embedded ValetudoMap zTXt chunk
+	// 2. Camera Entity for HA vacuum map cards (creates camera.ozmo_930_map_data)
+	// Serves a PNG with an embedded ValetudoMap zTXt chunk.
 	cameraConfig := map[string]interface{}{
 		"name":                  "OZMO 930 Map Data",
 		"unique_id":             "ozmo_930_map_data",
@@ -208,7 +208,7 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 	return nil
 }
 
-// ClearOldHADiscovery sends empty retained messages to clear previously configured long-form entity IDs
+// ClearOldHADiscovery sends empty retained messages to clear previously configured long-form entity IDs.
 func ClearOldHADiscovery(client mqtt.Client, haPrefix, sn string) {
 	oldTopics := []string{
 		fmt.Sprintf("%s/vacuum/%s/config", haPrefix, sn),

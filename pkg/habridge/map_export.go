@@ -1,4 +1,4 @@
-package valetudo
+package habridge
 
 import (
 	"bytes"
@@ -21,7 +21,7 @@ import (
 //go:embed saved_map.jpg
 var FallbackMapJPEG []byte
 
-// ExportGridToValetudoMap transforms a stitched Ecovacs mapGrid into a standard ValetudoMap JSON v2 struct
+// ExportGridToValetudoMap transforms a stitched Ecovacs mapGrid into a ValetudoMap JSON v2 wire struct.
 func ExportGridToValetudoMap(grid [][]byte, robotSN string, chargerX, chargerY, robotX, robotY, robotAngle int, rooms []string, roomNames map[string]string, restrictions []ecovacs.VirtualRestriction, pathPoints []ecovacs.PathPoint, cropMinX, cropMinY int) *ValetudoMap {
 	width := len(grid)
 	if width == 0 {
@@ -32,10 +32,10 @@ func ExportGridToValetudoMap(grid [][]byte, robotSN string, chargerX, chargerY, 
 		return NewEmptyValetudoMap(robotSN)
 	}
 
-	valetudoMap := NewEmptyValetudoMap(robotSN)
+	vMap := NewEmptyValetudoMap(robotSN)
 	pixelSize := 50
-	valetudoMap.PixelSize = pixelSize
-	valetudoMap.Size = MapSize{X: width * pixelSize, Y: height * pixelSize}
+	vMap.PixelSize = pixelSize
+	vMap.Size = MapSize{X: width * pixelSize, Y: height * pixelSize}
 
 	var floorPixels []int
 	var wallPixels []int
@@ -74,7 +74,7 @@ func ExportGridToValetudoMap(grid [][]byte, robotSN string, chargerX, chargerY, 
 	}
 
 	if len(floorPixels) > 0 {
-		valetudoMap.Layers = append(valetudoMap.Layers, MapLayer{
+		vMap.Layers = append(vMap.Layers, MapLayer{
 			Type:   "floor",
 			Pixels: floorPixels,
 			Dimensions: LayerDimensions{
@@ -85,7 +85,7 @@ func ExportGridToValetudoMap(grid [][]byte, robotSN string, chargerX, chargerY, 
 	}
 
 	if len(wallPixels) > 0 {
-		valetudoMap.Layers = append(valetudoMap.Layers, MapLayer{
+		vMap.Layers = append(vMap.Layers, MapLayer{
 			Type:   "wall",
 			Pixels: wallPixels,
 			Dimensions: LayerDimensions{
@@ -109,7 +109,7 @@ func ExportGridToValetudoMap(grid [][]byte, robotSN string, chargerX, chargerY, 
 		if customName, ok := roomNames[strconv.Itoa(roomId)]; ok && customName != "" {
 			segName = customName
 		}
-		valetudoMap.Layers = append(valetudoMap.Layers, MapLayer{
+		vMap.Layers = append(vMap.Layers, MapLayer{
 			Type:   "segment",
 			Pixels: pixels,
 			Dimensions: LayerDimensions{
@@ -125,14 +125,14 @@ func ExportGridToValetudoMap(grid [][]byte, robotSN string, chargerX, chargerY, 
 
 	// Add Charger & Robot location entities in world coordinates (mm)
 	if chargerX >= 0 && chargerY >= 0 && chargerX < width && chargerY < height {
-		valetudoMap.Entities = append(valetudoMap.Entities, MapEntity{
+		vMap.Entities = append(vMap.Entities, MapEntity{
 			Type:   "charger_location",
 			Points: []int{chargerX * pixelSize, chargerY * pixelSize},
 		})
 	}
 
 	if robotX >= 0 && robotY >= 0 && robotX < width && robotY < height {
-		valetudoMap.Entities = append(valetudoMap.Entities, MapEntity{
+		vMap.Entities = append(vMap.Entities, MapEntity{
 			Type:   "robot_position",
 			Points: []int{robotX * pixelSize, robotY * pixelSize},
 			MetaData: EntityMetaData{
@@ -141,40 +141,40 @@ func ExportGridToValetudoMap(grid [][]byte, robotSN string, chargerX, chargerY, 
 		})
 	}
 
-	// Convert virtual restrictions (robot mm centered at (400, 400)) to Valetudo world coordinates (mm)
-	offsetValetudoX := (400 - cropMinX) * pixelSize
-	offsetValetudoY := (400 - cropMinY) * pixelSize
+	// Convert virtual restrictions (robot mm centered at (400, 400)) to map world coordinates (mm)
+	offsetWorldX := (400 - cropMinX) * pixelSize
+	offsetWorldY := (400 - cropMinY) * pixelSize
 
 	for _, r := range restrictions {
 		if r.Type == "virtual_wall" && len(r.Points) == 4 {
-			vx1 := r.Points[0] + offsetValetudoX
-			vy1 := r.Points[1] + offsetValetudoY
-			vx2 := r.Points[2] + offsetValetudoX
-			vy2 := r.Points[3] + offsetValetudoY
-			valetudoMap.Entities = append(valetudoMap.Entities, MapEntity{
+			vx1 := r.Points[0] + offsetWorldX
+			vy1 := r.Points[1] + offsetWorldY
+			vx2 := r.Points[2] + offsetWorldX
+			vy2 := r.Points[3] + offsetWorldY
+			vMap.Entities = append(vMap.Entities, MapEntity{
 				Type:   "virtual_wall",
 				Points: []int{vx1, vy1, vx2, vy2},
 			})
 		} else if r.Type == "no_go_area" && len(r.Points) == 8 {
 			var vPts []int
 			for i := 0; i < 8; i += 2 {
-				vPts = append(vPts, r.Points[i]+offsetValetudoX, r.Points[i+1]+offsetValetudoY)
+				vPts = append(vPts, r.Points[i]+offsetWorldX, r.Points[i+1]+offsetWorldY)
 			}
-			valetudoMap.Entities = append(valetudoMap.Entities, MapEntity{
+			vMap.Entities = append(vMap.Entities, MapEntity{
 				Type:   "no_go_area",
 				Points: vPts,
 			})
 		}
 	}
 
-	// Convert path trajectory points to Valetudo world coordinates (mm)
+	// Convert path trajectory points to map world coordinates (mm)
 	if len(pathPoints) > 0 {
 		var currentSegment []int
 		for _, pt := range pathPoints {
-			vx := pt.X + offsetValetudoX
-			vy := pt.Y + offsetValetudoY
+			vx := pt.X + offsetWorldX
+			vy := pt.Y + offsetWorldY
 			if !pt.Connected && len(currentSegment) > 0 {
-				valetudoMap.Entities = append(valetudoMap.Entities, MapEntity{
+				vMap.Entities = append(vMap.Entities, MapEntity{
 					Type:   "path",
 					Points: currentSegment,
 				})
@@ -183,14 +183,14 @@ func ExportGridToValetudoMap(grid [][]byte, robotSN string, chargerX, chargerY, 
 			currentSegment = append(currentSegment, vx, vy)
 		}
 		if len(currentSegment) > 0 {
-			valetudoMap.Entities = append(valetudoMap.Entities, MapEntity{
+			vMap.Entities = append(vMap.Entities, MapEntity{
 				Type:   "path",
 				Points: currentSegment,
 			})
 		}
 	}
 
-	return valetudoMap
+	return vMap
 }
 
 // GridToImage converts a 2D byte grid directly into an RGBA image and renders entities onto it.
@@ -230,7 +230,7 @@ func GridToImage(grid [][]byte, chargerX, chargerY, robotX, robotY, robotAngle i
 					// Draw crisp room outline borders
 					val := grid[x][y]
 					for _, off := range [][2]int{{-1, 0}, {1, 0}, {0, -1}, {0, 1}} {
-						nx, ny := x + off[0], y + off[1]
+						nx, ny := x+off[0], y+off[1]
 						if nx >= 0 && nx < width && ny >= 0 && ny < height {
 							nVal := grid[nx][ny]
 							if nVal != val && (nVal >= 4 || nVal == 1 || nVal == 0) {
@@ -251,7 +251,7 @@ func GridToImage(grid [][]byte, chargerX, chargerY, robotX, robotY, robotAngle i
 	return img
 }
 
-// DrawEntitiesOnImage renders entities onto any image (including fallback JPEG)
+// DrawEntitiesOnImage renders entities onto any image (including fallback JPEG).
 func DrawEntitiesOnImage(src image.Image, chargerX, chargerY, robotX, robotY, robotAngle int, restrictions []ecovacs.VirtualRestriction, pathPoints []ecovacs.PathPoint, cropMinX, cropMinY int) image.Image {
 	bounds := src.Bounds()
 	rgba, ok := src.(*image.RGBA)
@@ -267,20 +267,20 @@ func DrawEntitiesOnImage(src image.Image, chargerX, chargerY, robotX, robotY, ro
 	return rgba
 }
 
-// DrawEntities renders the paths, virtual restrictions, charging dock, and robot vacuum onto the image
+// DrawEntities renders the paths, virtual restrictions, charging dock, and robot vacuum onto the image.
 func DrawEntities(img *image.RGBA, chargerX, chargerY, robotX, robotY, robotAngle int, restrictions []ecovacs.VirtualRestriction, pathPoints []ecovacs.PathPoint, cropMinX, cropMinY int) {
 	bounds := img.Bounds()
 
 	// 1. Draw Paths (if any)
 	if len(pathPoints) > 0 {
-		offsetValetudoX := (400 - cropMinX) * 50
-		offsetValetudoY := (400 - cropMinY) * 50
+		offsetWorldX := (400 - cropMinX) * 50
+		offsetWorldY := (400 - cropMinY) * 50
 		pathColor := color.RGBA{128, 216, 255, 200} // Sky blue
 		var prevX, prevY int
 		havePrev := false
 		for _, pt := range pathPoints {
-			px := (pt.X + offsetValetudoX) / 50
-			py := (pt.Y + offsetValetudoY) / 50
+			px := (pt.X + offsetWorldX) / 50
+			py := (pt.Y + offsetWorldY) / 50
 			if havePrev && pt.Connected {
 				drawLine(img, prevX, prevY, px, py, pathColor)
 			}
@@ -291,23 +291,23 @@ func DrawEntities(img *image.RGBA, chargerX, chargerY, robotX, robotY, robotAngl
 
 	// 2. Draw Virtual Restrictions (if any)
 	if len(restrictions) > 0 {
-		offsetValetudoX := (400 - cropMinX) * 50
-		offsetValetudoY := (400 - cropMinY) * 50
+		offsetWorldX := (400 - cropMinX) * 50
+		offsetWorldY := (400 - cropMinY) * 50
 		wallColor := color.RGBA{244, 67, 54, 255} // Bright red
 		for _, r := range restrictions {
 			if r.Type == "virtual_wall" && len(r.Points) == 4 {
-				x1 := (r.Points[0] + offsetValetudoX) / 50
-				y1 := (r.Points[1] + offsetValetudoY) / 50
-				x2 := (r.Points[2] + offsetValetudoX) / 50
-				y2 := (r.Points[3] + offsetValetudoY) / 50
+				x1 := (r.Points[0] + offsetWorldX) / 50
+				y1 := (r.Points[1] + offsetWorldY) / 50
+				x2 := (r.Points[2] + offsetWorldX) / 50
+				y2 := (r.Points[3] + offsetWorldY) / 50
 				drawThickLine(img, x1, y1, x2, y2, 2, wallColor)
 			} else if r.Type == "no_go_area" && len(r.Points) == 8 {
 				for i := 0; i < 8; i += 2 {
 					nextI := (i + 2) % 8
-					x1 := (r.Points[i] + offsetValetudoX) / 50
-					y1 := (r.Points[i+1] + offsetValetudoY) / 50
-					x2 := (r.Points[nextI] + offsetValetudoX) / 50
-					y2 := (r.Points[nextI+1] + offsetValetudoY) / 50
+					x1 := (r.Points[i] + offsetWorldX) / 50
+					y1 := (r.Points[i+1] + offsetWorldY) / 50
+					x2 := (r.Points[nextI] + offsetWorldX) / 50
+					y2 := (r.Points[nextI+1] + offsetWorldY) / 50
 					drawThickLine(img, x1, y1, x2, y2, 2, wallColor)
 				}
 			}
@@ -444,7 +444,7 @@ func absVal(v int) int {
 	return v
 }
 
-// ExportImageToValetudoMap transforms an image (e.g. from /getMapData endpoint) into a standard ValetudoMap v2 struct
+// ExportImageToValetudoMap transforms an image (e.g. from /getMapData endpoint) into a ValetudoMap v2 wire struct.
 func ExportImageToValetudoMap(img image.Image, robotSN string, chargerX, chargerY, robotX, robotY, robotAngle int) *ValetudoMap {
 	bounds := img.Bounds()
 	width := bounds.Dx()
@@ -459,14 +459,14 @@ func ExportImageToValetudoMap(img image.Image, robotSN string, chargerX, charger
 		}
 	}
 
-	valetudoMap := NewEmptyValetudoMap(robotSN)
+	vMap := NewEmptyValetudoMap(robotSN)
 	if width <= 1 && height <= 1 {
-		return valetudoMap
+		return vMap
 	}
 
 	pixelSize := 50 // 50mm per pixel
-	valetudoMap.PixelSize = pixelSize
-	valetudoMap.Size = MapSize{X: width * pixelSize, Y: height * pixelSize}
+	vMap.PixelSize = pixelSize
+	vMap.Size = MapSize{X: width * pixelSize, Y: height * pixelSize}
 
 	var floorPixels []int
 	var wallPixels []int
@@ -499,7 +499,7 @@ func ExportImageToValetudoMap(img image.Image, robotSN string, chargerX, charger
 	}
 
 	if len(floorPixels) > 0 {
-		valetudoMap.Layers = append(valetudoMap.Layers, MapLayer{
+		vMap.Layers = append(vMap.Layers, MapLayer{
 			Type:   "floor",
 			Pixels: floorPixels,
 			Dimensions: LayerDimensions{
@@ -510,7 +510,7 @@ func ExportImageToValetudoMap(img image.Image, robotSN string, chargerX, charger
 	}
 
 	if len(wallPixels) > 0 {
-		valetudoMap.Layers = append(valetudoMap.Layers, MapLayer{
+		vMap.Layers = append(vMap.Layers, MapLayer{
 			Type:   "wall",
 			Pixels: wallPixels,
 			Dimensions: LayerDimensions{
@@ -551,7 +551,7 @@ func ExportImageToValetudoMap(img image.Image, robotSN string, chargerX, charger
 		if finalRobotY < 0 { finalRobotY = 0 }
 		if finalRobotY >= height { finalRobotY = height - 1 }
 
-		valetudoMap.Entities = append(valetudoMap.Entities,
+		vMap.Entities = append(vMap.Entities,
 			MapEntity{
 				Type:   "charger_location",
 				Points: []int{finalChargerX * pixelSize, finalChargerY * pixelSize},
@@ -566,11 +566,11 @@ func ExportImageToValetudoMap(img image.Image, robotSN string, chargerX, charger
 		)
 	}
 
-	return valetudoMap
+	return vMap
 }
 
 // EncodePNGWithValetudoMap encodes an image as PNG and embeds the ValetudoMap JSON
-// as a compressed zTXt chunk with keyword "ValetudoMap", exactly as expected by lovelace-valetudo-map-card.
+// as a compressed zTXt chunk with keyword "ValetudoMap", as expected by HA vacuum map cards.
 func EncodePNGWithValetudoMap(img image.Image, vMap *ValetudoMap) ([]byte, error) {
 	bounds := img.Bounds()
 	if (bounds.Dx() <= 1 || bounds.Dy() <= 1) && len(FallbackMapJPEG) > 0 {
@@ -655,7 +655,7 @@ func NewEmptyValetudoMap(robotSN string) *ValetudoMap {
 	}
 }
 
-// BuildCameraRooms converts Valetudo segment layers and optional cropped room polygons
+// BuildCameraRooms converts map segment layers and optional cropped room polygons
 // into the camera attributes.rooms map consumed by lovelace-xiaomi-vacuum-map-card.
 func BuildCameraRooms(vMap *ValetudoMap, roomPolygons map[string][][2]int) map[string]CameraRoom {
 	rooms := make(map[string]CameraRoom)

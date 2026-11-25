@@ -22,8 +22,8 @@ venv/
 env/
 
 # Go compiled binaries
-/valetudo-bridge
-cmd/valetudo-bridge/valetudo-bridge*
+/ha-bridge
+cmd/ha-bridge/ha-bridge*
 api_client/api_client
 api_client/ecovacs-controller*
 api_client/*-linux-*
@@ -59,3 +59,6 @@ squashfs-root/
 *.pem
 .env
 .env.local
+
+# Local agent directives & private homelab runbooks
+AGENTS.md

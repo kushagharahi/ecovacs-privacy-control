@@ -13,7 +13,7 @@ Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local
 > ```
 > I've personally tested most of everything in here with my 930 OZMO, but it's not well reviewed and very much vibe coded.
 
-As it is now, you can run the controller (`api_client`) and the Home Assistant bridge (`cmd/valetudo-bridge`) and Home Assistant will pick up the vacuum automatically via MQTT Discovery. You can set up map control with standard Home Assistant camera cards or the [lovelace-xiaomi-vacuum-map-card](https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card/) (see [docs/ha_valetudo_integration.md](docs/ha_valetudo_integration.md)).
+As it is now, you can run the controller (`api_client`) and the Home Assistant bridge (`cmd/ha-bridge`) and Home Assistant will pick up the vacuum automatically via MQTT Discovery. You can set up map control with standard Home Assistant camera cards or the [lovelace-xiaomi-vacuum-map-card](https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card/) (see [docs/ha_bridge_integration.md](docs/ha_bridge_integration.md)).
 
 Eventually this will be all entirely enclosed in the robot and HA will connect to the services hosted within the robot.
 
@@ -58,8 +58,8 @@ go run .
 
 Run the Home Assistant MQTT bridge:
 ```bash
-cd cmd/valetudo-bridge
-go run . -broker "tcp://<MQTT_BROKER_IP>:1883" -controller "http://localhost:8000"
+cd cmd/ha-bridge
+go run . -mqtt-broker "tcp://<MQTT_BROKER_IP>:1883" -controller-url "http://localhost:8000" -robot-sn "<ROBOT_SN>"
 ```
 
 Home Assistant will automatically discover:
@@ -146,7 +146,7 @@ The controller exposes a local REST API on port `8000`:
 - [x] Gain persistent root access via USB OTG exploit (`root_payload`)
 - [x] Fix map-wiping on relocation failure & provide map recovery (`libpersistmap.so`)
 - [x] Drive robot around without suction motor (`libsilentgoto.so`)
-- [x] Home Assistant MQTT Auto-Discovery & Valetudo bridge (`cmd/valetudo-bridge`)
+- [x] Home Assistant MQTT Auto-Discovery bridge (`cmd/ha-bridge`)
 - [x] Dynamic soundboard / custom audio playback support
 - [x] Consumable lifespan sensors & mopping water tank detection
 - [ ] Run controller and HA MQTT bridge directly on the robot itself (zero external server)

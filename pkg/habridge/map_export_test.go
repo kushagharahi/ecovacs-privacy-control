@@ -1,4 +1,4 @@
-package valetudo
+package habridge
 
 import (
 	"encoding/json"

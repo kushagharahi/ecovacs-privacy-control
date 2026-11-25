@@ -1,7 +1,7 @@
-package valetudo
+package habridge
 
-// ValetudoMap represents the official Valetudo Map JSON Schema (Version 2)
-// As consumed by Home Assistant custom:valetudo-map-card and lovelace-xiaomi-vacuum-map-card.
+// ValetudoMap represents the Valetudo Map JSON Schema (Version 2) wire format
+// consumed by Home Assistant custom:valetudo-map-card and lovelace-xiaomi-vacuum-map-card.
 type ValetudoMap struct {
 	Class     string      `json:"__class"`
 	MetaData  MapMetaData `json:"metaData"`
@@ -73,20 +73,20 @@ type CameraRoom struct {
 	Y1      *int     `json:"y1,omitempty"`
 }
 
-// ValetudoState values conforming to Home Assistant / Valetudo state schema
-type ValetudoState string
+// VacuumState values conforming to the Home Assistant MQTT vacuum state schema.
+type VacuumState string
 
 const (
-	StateError     ValetudoState = "error"
-	StateDocked    ValetudoState = "docked"
-	StateCleaning  ValetudoState = "cleaning"
-	StateReturning ValetudoState = "returning"
-	StatePaused    ValetudoState = "paused"
-	StateIdle      ValetudoState = "idle"
+	StateError     VacuumState = "error"
+	StateDocked    VacuumState = "docked"
+	StateCleaning  VacuumState = "cleaning"
+	StateReturning VacuumState = "returning"
+	StatePaused    VacuumState = "paused"
+	StateIdle      VacuumState = "idle"
 )
 
-// MapEcovacsStateToValetudo converts Ecovacs ChargingState/CleanReport into standard ValetudoState
-func MapEcovacsStateToValetudo(chargingState, cleanSpeed string) ValetudoState {
+// MapEcovacsState converts Ecovacs ChargingState/CleanReport into a Home Assistant VacuumState.
+func MapEcovacsState(chargingState, cleanSpeed string) VacuumState {
 	switch chargingState {
 	case "SlotCharging", "Docked":
 		return StateDocked

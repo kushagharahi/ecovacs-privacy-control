@@ -1286,7 +1286,7 @@ During initial attempts to improve transit trajectories, an experimental prototy
 4. **Task 8 (Remote Control) Lockout Bug**:
    - Concurrently, the bridge daemon issued `/move?act=stop` when destination arrival was detected.
    - In `plug_medusa_plugin_wifiHandler.so` (`0x165d0`), `/move` initiates **Task 8 (`MdsStartRemoteControlTask`)**.
-   - While Task 8 remained active in the task manager, Medusa rejected autonomous navigation commands, including Task 3 (`Charge` / return to dock). (This was resolved by eliminating `/move?act=stop` in `cmd/valetudo-bridge/main.go`).
+   - While Task 8 remained active in the task manager, Medusa rejected autonomous navigation commands, including Task 3 (`Charge` / return to dock). (This was resolved by eliminating `/move?act=stop` in `cmd/ha-bridge/main.go`).
 
 ### D. Evaluated Future Pathing Improvement Architectures
 
