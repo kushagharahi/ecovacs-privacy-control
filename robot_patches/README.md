@@ -37,7 +37,7 @@ Instead, our patching architecture leverages dynamic `LD_PRELOAD` injection:
 - **Problem Solved**:
   - In factory firmware, autonomous point-to-point transit is exclusively coupled to cleaning tasks (Task 9 `SpotArea`). Any transit command unconditionally engages cleaning suction and brush motors (11,000–15,000 RPM) via `MDSMotorControl` (`0x29724` in `plug_mmi_periph.so`) and announces voice lines ("I am starting the clean").
 - **Interception Mechanism**:
-  - Activated dynamically when `/tmp/silent_goto` exists on the robot filesystem (created during Go-To navigation by the Valetudo bridge).
+  - Activated dynamically when `/tmp/silent_goto` exists on the robot filesystem (created during Go-To navigation by the HA bridge).
   - Intercepts `MDSMotorControl`: Forces motor mode to `2` (Idle / 0 RPM) during transit.
   - Intercepts `MdsMmiMotorElemCastMotorSetMmiMsg`: Zeroes out suction, main brush, and side brush speed targets in peripheral hardware packets.
   - Silences transit voice announcements (`0x0e, 0x13, 0x14, 0x15, 0x16, 0x18, 0x1b, 0x1d, 0x25, 0x26, 0x28, 0x2d` on `MdsPlayAudio` / `PLAYER cmd == 1`) without modifying stock audio files.

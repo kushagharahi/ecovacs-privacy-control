@@ -29,7 +29,7 @@ It communicates with your local Mosquitto MQTT broker (`<HOST_IP>:1883`) and pub
 
 ## 2. MQTT Topics & Valetudo-Compatible Map Capabilities
 
-For compatibility with custom vacuum map cards such as `custom:xiaomi-vacuum-map-card` and `custom:valetudo-map-card`, `ha-bridge` publishes state and map data using the `ValetudoMap` v2 schema under the configured primary topic (`MQTT_TOPIC`, defaulting to `valetudo/<DEVICE_ID>/`) and subscribes to control commands under both `ha-bridge/<DEVICE_ID>/` and `valetudo/<DEVICE_ID>/` (plus `ha-bridge/ozmo_930/` and `valetudo/ozmo_930/`):
+For compatibility with custom vacuum map cards such as `custom:xiaomi-vacuum-map-card` and `custom:valetudo-map-card`, `ha-bridge` publishes state and map data using the `ValetudoMap` v2 schema under the configured primary topic (`MQTT_TOPIC`, defaulting to `valetudo/<DEVICE_ID>/`) and subscribes to control commands under `valetudo/<DEVICE_ID>/` (plus `valetudo/ozmo_930/`):
 
 - **ValetudoMap JSON v2:** `<MQTT_TOPIC>/<DEVICE_ID>/MapData/map_data`
 - **PNG Map (with `ValetudoMap` zTXt chunk):** `<MQTT_TOPIC>/<DEVICE_ID>/map_data`
@@ -39,7 +39,7 @@ For compatibility with custom vacuum map cards such as `custom:xiaomi-vacuum-map
 - **Water Flow:** `<MQTT_TOPIC>/<DEVICE_ID>/water_flow` (`set_water_flow`)
 - **Speaker Volume:** `<MQTT_TOPIC>/<DEVICE_ID>/volume` (`set_volume`)
 - **Play Sound:** `<MQTT_TOPIC>/<DEVICE_ID>/play_sound`
-- **Map Capabilities (subscribed on both `ha-bridge/...` and `valetudo/...`):**
+- **Map Capabilities (under `valetudo/<DEVICE_ID>/...`):**
   - `MapSegmentationCapability/clean/set`
   - `ZoneCleaningCapability/start/set`
   - `GoToLocationCapability/target/set` and `GoToLocationCapability/go/set`
@@ -97,26 +97,26 @@ show_camera: true
 
 ## 4. Architecture & Data Flow
 
+In the zero-server on-bot deployment (`cmd/ecovacs-bot`), `ecovacs-controller`, `ha-bridge`, and an embedded MQTT broker (`:1883`) run directly on the robot inside `/tmp/ecovacs-bot` (unpacked from `/data/ecovacs-bot.gz` at boot):
+
 ```mermaid
 graph LR
     subgraph Robot ["Ecovacs OZMO 930 (<ROBOT_IP>)"]
-        SLAM["SLAM Engine / DevNodes"]
-        FW["Firmware / Bumper / Sensors"]
-    end
-
-    subgraph ControllerHost ["Privacy Controller & Bridge Host"]
-        Server["ecovacs-controller (127.0.0.1:8000)"]
-        Bridge["ha-bridge"]
+        FW["medusa Firmware Daemon"]
+        Controller["ecovacs-controller (127.0.0.1:8007/5223/8000)"]
+        Bridge["ha-bridge (in-process)"]
+        BotMQTT["Embedded MQTT Broker (:1883)"]
     end
 
     subgraph Infrastructure ["Home Network"]
-        MQTT["Mosquitto Broker (<HOST_IP>:1883)"]
+        MQTT["Mosquitto Broker (Bridge to <ROBOT_IP>:1883)"]
         HA["Home Assistant Core"]
     end
 
-    Robot <--"TLS XMPP (:5223)"--> Server
-    Server <--"Proactive HTTP Polling"--> Bridge
-    Bridge <--"MQTT Pub/Sub & Auto-Discovery"--> MQTT
+    FW <--"Loopback TLS XMPP (127.0.0.1:5223)"--> Controller
+    Controller <--"Local HTTP Polling (127.0.0.1:8000)"--> Bridge
+    Bridge <--"Loopback MQTT (127.0.0.1:1883)"--> BotMQTT
+    BotMQTT <--"MQTT Bridge (<ROBOT_IP>:1883)"--> MQTT
     MQTT <--"State & Commands"--> HA
 ```
 

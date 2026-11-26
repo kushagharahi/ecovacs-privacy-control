@@ -13,6 +13,7 @@ import (
 	_ "image/jpeg"
 	"image/png"
 	"math"
+	"sort"
 	"strconv"
 
 	"github.com/kushagharahi/ecovacs-privacy-control/pkg/ecovacs"
@@ -95,7 +96,14 @@ func ExportGridToValetudoMap(grid [][]byte, robotSN string, chargerX, chargerY, 
 		})
 	}
 
-	for roomId, pixels := range roomPixelsMap {
+	roomIDs := make([]int, 0, len(roomPixelsMap))
+	for roomId := range roomPixelsMap {
+		roomIDs = append(roomIDs, roomId)
+	}
+	sort.Ints(roomIDs)
+
+	for _, roomId := range roomIDs {
+		pixels := roomPixelsMap[roomId]
 		rMinX, rMaxX, rMinY, rMaxY := width, 0, height, 0
 		for i := 0; i < len(pixels); i += 2 {
 			px, py := pixels[i], pixels[i+1]

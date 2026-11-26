@@ -13,9 +13,7 @@ Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local
 > ```
 > I've personally tested most of everything in here with my 930 OZMO, but it's not well reviewed and very much vibe coded.
 
-As it is now, you can run the controller (`api_client`) and the Home Assistant bridge (`cmd/ha-bridge`) and Home Assistant will pick up the vacuum automatically via MQTT Discovery. You can set up map control with standard Home Assistant camera cards or the [lovelace-xiaomi-vacuum-map-card](https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card/) (see [docs/ha_bridge_integration.md](docs/ha_bridge_integration.md)).
-
-Eventually this will be all entirely enclosed in the robot and HA will connect to the services hosted within the robot.
+Everything runs directly on the robot as a single self-contained ARMv7 Go binary (`cmd/ecovacs-bot`), combining the XMPP controller, REST API, Home Assistant MQTT Auto-Discovery bridge, and an embedded MQTT broker — **no external server or cloud connection required**. Home Assistant picks up the vacuum automatically via MQTT Discovery, and map control works with standard Home Assistant camera cards or [lovelace-xiaomi-vacuum-map-card](https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card/) (see [docs/ha_bridge_integration.md](docs/ha_bridge_integration.md)).
 
 ## Root Access & Persistence (OZMO 930)
 
@@ -35,40 +33,97 @@ Persistent root access on the OZMO 930 can be gained without disassembling the r
 
 ## Quick Start (OZMO 930)
 
-### 1. Provision WiFi & Point Robot to Controller
+### 1. Provision WiFi
 1. Hold down the reset button under the robot's top cover until it chimes and announces it is in pairing mode.
 2. Connect your computer to the robot's AP network (`ECOVACS_xxxx`).
-3. Run the provisioning script, specifying your local WiFi credentials and the IP of the machine running the controller:
+3. Run the provisioning script with your WiFi credentials. For the on-robot deployment, set `--host-ip 127.0.0.1` (or your controller host IP if running externally):
    ```bash
-   python3 ozmo-930-wifi.py --ssid "<YOUR_SSID>" --passphrase "<YOUR_WIFI_PASSWORD>" --host-ip <HOST_IP>
+   python3 ozmo-930-wifi.py --ssid "<YOUR_SSID>" --passphrase "<YOUR_WIFI_PASSWORD>" --host-ip 127.0.0.1
    ```
-4. The robot will join your WiFi network and register `<HOST_IP>` as its discovery target.
+4. The robot will join your WiFi network and save the discovery host to `/data/config/medusa/lb.conf`.
 
 ### 2. Root the Robot (One-time setup)
 1. Prepare a FAT32 USB drive with `root_payload/` as described above.
 2. Plug it into the robot's micro-USB port and power-cycle.
 3. Verify telnet access: `telnet <ROBOT_IP> 23`.
 
-### 3. Run the Controller & Bridge
-Run the controller:
+### 3. Deploy `ecovacs-bot` Directly on the Robot (Zero External Server)
+Cross-compile and deploy the unified `ecovacs-bot` binary straight onto the robot:
 ```bash
-cd api_client
-go run .
+python3 robot_patches/deploy_bot.py --build \
+  --robot-ip <ROBOT_IP> \
+  --robot-sn <ROBOT_SN> \
+  --restart \
+  --lb-hot-switch
+```
+Optional flags:
+- `--custom-sounds "98:My Sound,99:Another Sound"` — writes `/data/custom_sounds.json` for custom `/data/res/snd/*.ogg` voice prompts.
+- `--dock-x <X> --dock-y <Y>` — override dock pixel coordinates if needed.
+- `--verify-only` — inspect running processes, listening ports, disk usage, and MD5 without modifying files.
+
+**What this installs on the robot:**
+- `/data/ecovacs-bot.gz` (~2.7 MB gzipped; uploaded via `/tmp` RAM staging to stay safe on the 7.7 MiB `/data` partition).
+- `/data/autostart/25-ecovacs-bot.sh` — unpacks to `/tmp/ecovacs-bot` and starts on every boot.
+- `/data/config/medusa/lb.conf` → `{"lbSvr": "127.0.0.1"}` (and hot-switches the running `medusa` daemon via `mdsctl` without rebooting).
+- Self-signed XMPP TLS certs cached in `/data/ecovacs-certs/` (valid through 2099 so the robot's un-synced boot clock never fails TLS validation).
+
+**Ports hosted directly on `<ROBOT_IP>`:**
+
+| Port | Service |
+|---|---|
+| `:8007` | HTTP discovery lookup server (`medusa` loopback bootstrap) |
+| `:5223` | TLS XMPP command & telemetry server (`medusa` loopback) |
+| `:8000` | Local REST API (`/health`, `/status`, `/sounds`, `/mapGrid`, commands) |
+| `:1883` | Embedded MQTT broker (`mochi-co/mqtt` with 2 MiB map buffers & no-self-echo loop prevention) |
+
+### 4. Connect Home Assistant
+
+Home Assistant's MQTT integration connects to a single broker at a time. Choose whichever setup matches your network:
+
+#### Option A: Bridge to Your Existing LAN Mosquitto Broker (Recommended)
+If Home Assistant already uses a Mosquitto broker (e.g. for Zigbee2MQTT) or your robot lives on an isolated IoT VLAN where outbound connections to LAN are blocked, add this bridge block to `mosquitto.conf` and restart Mosquitto. Mosquitto initiates the connection *inbound* to the robot, so your IoT firewall stays completely sealed:
+
+```conf
+connection ecovacs-ozmo930
+address <ROBOT_IP>:1883
+clientid mosquitto-ozmo930-bridge
+try_private false
+bridge_protocol_version mqttv311
+cleansession true
+notifications false
+bridge_attempt_unsubscribe false
+restart_timeout 5
+
+topic homeassistant/# in 0
+topic valetudo/# both 0
 ```
 
-Run the Home Assistant MQTT bridge:
-```bash
-cd cmd/ha-bridge
-go run . -mqtt-broker "tcp://<MQTT_BROKER_IP>:1883" -controller-url "http://localhost:8000" -robot-sn "<ROBOT_SN>"
-```
+Because the robot's embedded broker suppresses self-echo, `topic valetudo/# both 0` works bidirectionally without echo loops and requires no per-entity topic configuration.
+
+#### Option B: Direct to the Robot (Vacuum is your only MQTT device)
+Point Home Assistant's MQTT integration directly to `<ROBOT_IP>` on port `1883` (anonymous, no password).
+
+#### Option C: Robot Connects Outbound as a Plain MQTT Client
+If your robot is allowed to reach your existing LAN Mosquitto broker directly, disable the embedded broker in `/data/autostart/25-ecovacs-bot.sh` (`-mqtt-listen off -mqtt-broker tcp://<MQTT_BROKER_IP>:1883`, or `MQTT_LISTEN=off` / `MQTT_BROKER=tcp://<MQTT_BROKER_IP>:1883`) — no bridge config needed in `mosquitto.conf`.
 
 Home Assistant will automatically discover:
 - `vacuum.ecovacs_deebot_ozmo_930_...` (State, Clean, Pause, Return to Base, Locate)
-- `camera.ecovacs_deebot_ozmo_930_ozmo_map` (Live rendered map)
-- Sensors for battery level, main brush, side brushes, and dust filter
+- `camera.ecovacs_deebot_ozmo_930_ozmo_map` (Live rendered map with room polygons)
+- Sensors for battery level, charging state, main brush, side brushes, dust filter, and clean stats
 - Binary sensor for mopping water tank attachment
+- Switches for carpet boost, continuous clean, voice reports, and DND
 - Select entities for water flow rate and voice prompt soundboard
-- Volume number slider
+- Volume number slider and consumable reset buttons
+
+### Alternative: Run Controller & Bridge on an External Host
+If you prefer running the controller and bridge off-robot:
+```bash
+# Terminal 1: Controller
+go run ./api_client -server-ip <HOST_IP> -robot-ip <ROBOT_IP>
+
+# Terminal 2: Home Assistant MQTT Bridge
+go run ./cmd/ha-bridge -mqtt-broker "tcp://<MQTT_BROKER_IP>:1883" -controller-url "http://localhost:8000" -robot-sn "<ROBOT_SN>"
+```
 
 ---
 
@@ -76,7 +131,9 @@ Home Assistant will automatically discover:
 
 Custom shared libraries inject into `medusa` via `LD_PRELOAD` to fix factory firmware quirks and enable quiet point-to-point transit:
 - **Map Saver & Anti-Wipe (`libpersistmap.so`)**: Prevents the robot from deleting its own floor map! In factory Ecovacs firmware, if return-to-dock times out or the robot is picked up, it catastrophically purges the active map from memory, resets coordinates to `(0, 0)`, and blindly wanders into walls. This patch traps relocation timeouts, preserves the active map and coordinates, suppresses blind wandering, and enables true map restoration from storage.
-- **Silent Drive / Quiet Navigation (`libsilentgoto.so`)**: Allows you to drive the robot to coordinates without the vacuum suction motor screaming. By default, the OZMO 930 hardware unconditionally runs the vacuum suction motor at full blast (11,000–15,000 RPM) during any autonomous navigation. This patch silences the cleaning motors whenever the robot is executing a "Go to" point-to-point transit command.
+- **Silent Drive / Quiet Navigation (`libsilentgoto.so`)**: Allows you to drive the robot to coordinates without the vacuum suction motor screaming. By default, the OZMO 930 hardware unconditionally runs the vacuum suction motor at full blast (11,000–15,000 RPM) during any autonomous navigation. This patch silences the cleaning motors and startup voice lines whenever the robot is executing a "Go to" point-to-point transit command.
+- **Direct Global Pathing (`libdirectpath.so`)**: Bypasses synthetic boundary doorway detours in open-concept floor plans with single-pass global A* path planning.
+- **SLAM Pose & Drift Guard (`libslamguard.so`)**: Intercepts erroneous pose jumps to prevent SLAM localization crashes and sudden redocking failures.
 
 ### Deploying Patches over Telnet
 
@@ -149,7 +206,7 @@ The controller exposes a local REST API on port `8000`:
 - [x] Home Assistant MQTT Auto-Discovery bridge (`cmd/ha-bridge`)
 - [x] Dynamic soundboard / custom audio playback support
 - [x] Consumable lifespan sensors & mopping water tank detection
-- [ ] Run controller and HA MQTT bridge directly on the robot itself (zero external server)
+- [x] Run controller and HA MQTT bridge directly on the robot itself (zero external server)
 - [ ] Fix pause button quirks during certain navigation states
 - [ ] Auto-create interactive map rooms/zones in Lovelace
 - [x] One-click deployment script for custom firmware patches (`robot_patches/deploy.py`)

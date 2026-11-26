@@ -1,7 +1,8 @@
-package main
+package controller
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -9,7 +10,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -34,7 +38,6 @@ func TestCleanReportAndChargeStateCollision(t *testing.T) {
 		statusMu.Unlock()
 	}()
 
-	// 1. Firmware CleanReport/GetCleanState emits st="s" when cleaning is active
 	err := handleResponse("CleanReport", map[string]interface{}{
 		"ctl": map[string]interface{}{
 			"clean": map[string]interface{}{
@@ -50,7 +53,6 @@ func TestCleanReportAndChargeStateCollision(t *testing.T) {
 		t.Fatalf("ChargingState after st='s' = %q, want 'Cleaning'", ChargingState)
 	}
 
-	// 2. GetChargeState type="Idle" must NOT clobber active Cleaning state
 	err = handleResponse("ChargeState", map[string]interface{}{
 		"ctl": map[string]interface{}{
 			"charge": map[string]interface{}{
@@ -65,7 +67,6 @@ func TestCleanReportAndChargeStateCollision(t *testing.T) {
 		t.Fatalf("ChargeState Idle clobbered Cleaning -> %q", ChargingState)
 	}
 
-	// 3. CleanReport st="h" when off dock transitions Cleaning -> Idle
 	err = handleResponse("CleanReport", map[string]interface{}{
 		"ctl": map[string]interface{}{
 			"clean": map[string]interface{}{
@@ -80,7 +81,6 @@ func TestCleanReportAndChargeStateCollision(t *testing.T) {
 		t.Fatalf("ChargingState after st='h' off dock = %q, want 'Idle'", ChargingState)
 	}
 
-	// 4. Going (returning to dock) must NOT be clobbered by CleanReport st="h", and transitions back cleanly
 	_ = handleResponse("ChargeState", map[string]interface{}{
 		"ctl": map[string]interface{}{
 			"charge": map[string]interface{}{
@@ -109,7 +109,6 @@ func TestCleanReportAndChargeStateCollision(t *testing.T) {
 		t.Fatalf("ChargingState after cancelled Going ChargeState Idle = %q, want 'Idle'", ChargingState)
 	}
 
-	// 5. SlotCharging takes effect immediately and is not overwritten by st="h"
 	_ = handleResponse("ChargeState", map[string]interface{}{
 		"ctl": map[string]interface{}{
 			"charge": map[string]interface{}{
@@ -128,7 +127,6 @@ func TestCleanReportAndChargeStateCollision(t *testing.T) {
 		t.Fatalf("ChargingState after SlotCharging + st='h' = %q, want 'SlotCharging'", ChargingState)
 	}
 
-	// 6. Unknown/untyped GetOnOff must NOT overwrite CarpetBoost
 	_ = handleResponse("GetOnOff", map[string]interface{}{
 		"ctl": map[string]interface{}{
 			"-on": "0",
@@ -157,7 +155,6 @@ func TestXmppWriteRawDeadSocketDoesNotDeadlock(t *testing.T) {
 		botLock.Unlock()
 	}()
 
-	// Peer stops reading on unbuffered pipe -> SetWriteDeadline must fail and unblock cleanly
 	done := make(chan error, 1)
 	go func() {
 		done <- bot.WriteRaw("<iq/>")
@@ -256,7 +253,6 @@ func encodeTestTracePoints(t *testing.T, pts []PathPoint) string {
 	if len(stdBytes) < 13 {
 		t.Fatalf("unexpected lzma header len %d", len(stdBytes))
 	}
-	// Strip bytes [8:12] to produce Ecovacs 9-byte header format
 	ecovacsBytes := append([]byte{}, stdBytes[:8]...)
 	ecovacsBytes = append(ecovacsBytes, stdBytes[12:]...)
 	return base64.StdEncoding.EncodeToString(ecovacsBytes)
@@ -295,7 +291,6 @@ func TestTraceBackfillRoutingChunkingAndOrdering(t *testing.T) {
 		pathLock.Unlock()
 	}()
 
-	// 1. GetTrM reply without td attribute (matching firmware) with count=450 -> 3 chunks
 	getTrMIQ := Stanza{
 		XMLName: xml.Name{Local: "iq"},
 		Inner:   []byte(`<query xmlns='com:ctl'><ctl id='4444' ret='ok' trid='279615' c='450'/></query>`),
@@ -327,13 +322,11 @@ func TestTraceBackfillRoutingChunkingAndOrdering(t *testing.T) {
 	}
 	sentMu.Unlock()
 
-	// Build 450 distinct points (index i -> X = i * 10)
 	allPts := make([]PathPoint, 450)
 	for i := range allPts {
 		allPts[i] = PathPoint{X: i * 10, Y: i * 20, Connected: true}
 	}
 
-	// 2. Deliver GetTr replies OUT OF ORDER without td or trid (matching firmware FUN_0001a728)
 	deliverChunk := func(reqID string, pts []PathPoint) {
 		trB64 := encodeTestTracePoints(t, pts)
 		iq := Stanza{
@@ -360,7 +353,6 @@ func TestTraceBackfillRoutingChunkingAndOrdering(t *testing.T) {
 	}
 	pathLock.Unlock()
 
-	// 3. Live TrM push c=451 followed by trace tf=450 should NOT trigger redundant GetTr
 	sentMu.Lock()
 	sent = nil
 	sentMu.Unlock()
@@ -390,7 +382,6 @@ func TestTraceBackfillRoutingChunkingAndOrdering(t *testing.T) {
 	}
 	pathLock.Unlock()
 
-	// 4. New clean session (new trid) resets path cleanly and fetches new trace
 	newTrMIQ := Stanza{
 		XMLName: xml.Name{Local: "iq"},
 		Inner:   []byte(`<query xmlns='com:ctl'><ctl td='TrM' trid='279616' c='2'/></query>`),
@@ -407,4 +398,124 @@ func TestTraceBackfillRoutingChunkingAndOrdering(t *testing.T) {
 		t.Fatalf("expected reset for new trid, ActiveTrID=%d len=%d", ActiveTrID, len(DiscoveredPath))
 	}
 	pathLock.Unlock()
+}
+
+func TestHandleLookupLoopbackAndRemoteValidation(t *testing.T) {
+	origFlag := serverIPFlag
+	origCfg := cfgGlobal
+	defer func() {
+		serverIPFlag = origFlag
+		cfgGlobal = origCfg
+	}()
+
+	// 1. Remote caller without explicit SERVER_IP -> rejected when Host is localhost
+	serverIPFlag = ""
+	req := httptest.NewRequest("POST", "http://127.0.0.1:8007/lookup.do", strings.NewReader(`{"todo":"FindBest","service":"EcoMsgNew"}`))
+	req.Host = "127.0.0.1:8007"
+	req.RemoteAddr = "192.168.10.224:54321"
+	rec := httptest.NewRecorder()
+	handleLookup(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("remote caller with loopback Host expected 500, got %d", rec.Code)
+	}
+
+	// 2. Local loopback caller (on-robot medusa) -> allowed and compact JSON returned
+	reqLocal := httptest.NewRequest("POST", "http://127.0.0.1:8007/lookup.do", strings.NewReader(`{"todo":"FindBest","service":"EcoMsgNew"}`))
+	reqLocal.Host = "127.0.0.1:8007"
+	reqLocal.RemoteAddr = "127.0.0.1:54321"
+	recLocal := httptest.NewRecorder()
+	handleLookup(recLocal, reqLocal)
+	if recLocal.Code != http.StatusOK {
+		t.Fatalf("loopback caller expected 200, got %d (%s)", recLocal.Code, recLocal.Body.String())
+	}
+	if strings.Contains(recLocal.Body.String(), " ") {
+		t.Fatalf("expected compact JSON without spaces, got %q", recLocal.Body.String())
+	}
+	var resp LookupResponse
+	if err := json.Unmarshal(recLocal.Body.Bytes(), &resp); err != nil || resp.IP != "127.0.0.1" || resp.Port != 5223 {
+		t.Fatalf("unexpected lookup response: %+v err=%v", resp, err)
+	}
+
+	// 3. Explicit serverIPFlag=127.0.0.1 -> allowed
+	serverIPFlag = "127.0.0.1"
+	recExplicit := httptest.NewRecorder()
+	handleLookup(recExplicit, req)
+	if recExplicit.Code != http.StatusOK {
+		t.Fatalf("explicit 127.0.0.1 expected 200, got %d", recExplicit.Code)
+	}
+}
+
+func TestLocalSilentGotoAndGoToWithoutTelnet(t *testing.T) {
+	tmpDir := t.TempDir()
+	origSilent := silentGotoFilePath
+	origTarget := gotoTargetFilePath
+	origStop := gotoStopFilePath
+	origLocal := localRobot
+	origRobotIP := robotIPFlag
+	silentGotoFilePath = filepath.Join(tmpDir, "silent_goto")
+	gotoTargetFilePath = filepath.Join(tmpDir, "goto_target")
+	gotoStopFilePath = filepath.Join(tmpDir, "goto_stop")
+	localRobot = true
+	robotIPFlag = "127.0.0.1"
+	defer func() {
+		silentGotoFilePath = origSilent
+		gotoTargetFilePath = origTarget
+		gotoStopFilePath = origStop
+		localRobot = origLocal
+		robotIPFlag = origRobotIP
+	}()
+
+	rec := httptest.NewRecorder()
+	handleSilentGoto(rec, httptest.NewRequest("POST", "/silentGoto?enable=1", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("silentGoto enable=1 failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(silentGotoFilePath); err != nil {
+		t.Fatalf("expected silent_goto file to exist: %v", err)
+	}
+
+	recDisable := httptest.NewRecorder()
+	handleSilentGoto(recDisable, httptest.NewRequest("POST", "/silentGoto?enable=0", nil))
+	if recDisable.Code != http.StatusOK {
+		t.Fatalf("silentGoto enable=0 failed: %d", recDisable.Code)
+	}
+	if _, err := os.Stat(silentGotoFilePath); !os.IsNotExist(err) {
+		t.Fatalf("expected silent_goto file to be removed, err=%v", err)
+	}
+
+	recGo := httptest.NewRecorder()
+	handleGoTo(recGo, httptest.NewRequest("POST", "/goTo?x=1200&y=-450", nil))
+	if recGo.Code != http.StatusOK {
+		t.Fatalf("goTo start failed: %d %s", recGo.Code, recGo.Body.String())
+	}
+	data, err := os.ReadFile(gotoTargetFilePath)
+	if err != nil || strings.TrimSpace(string(data)) != "1200 -450" {
+		t.Fatalf("unexpected goto_target content %q err=%v", string(data), err)
+	}
+
+	recStop := httptest.NewRecorder()
+	handleGoTo(recStop, httptest.NewRequest("POST", "/goTo?act=stop", nil))
+	if recStop.Code != http.StatusOK {
+		t.Fatalf("goTo stop failed: %d", recStop.Code)
+	}
+	if _, err := os.Stat(gotoStopFilePath); err != nil {
+		t.Fatalf("expected goto_stop file to exist: %v", err)
+	}
+}
+
+func TestGenerateSelfSignedTLSConfig(t *testing.T) {
+	cacheDir := t.TempDir()
+	tlsCfg, err := generateSelfSignedTLSConfig(cacheDir)
+	if err != nil {
+		t.Fatalf("generateSelfSignedTLSConfig failed: %v", err)
+	}
+	if len(tlsCfg.Certificates) != 1 || tlsCfg.MinVersion != tls.VersionTLS10 {
+		t.Fatalf("unexpected tls config: certs=%d minVer=%d", len(tlsCfg.Certificates), tlsCfg.MinVersion)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "server.crt")); err != nil {
+		t.Fatalf("expected cached server.crt: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(cacheDir, "server.key")); err != nil {
+		t.Fatalf("expected cached server.key: %v", err)
+	}
 }

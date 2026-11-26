@@ -1,6 +1,7 @@
-package main
+package controller
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -29,11 +30,32 @@ func getEnv(key, defaultVal string) string {
 	return defaultVal
 }
 
-func handleLookup(w http.ResponseWriter, r *http.Request) {
-	serverIP := serverIPFlag
-	if serverIP == "" {
-		serverIP = getEnv("SERVER_IP", getEnv("CONTROLLER_IP", ""))
+func isLoopbackHost(host string) bool {
+	h := strings.TrimSpace(host)
+	if h == "" {
+		return false
 	}
+	if strings.EqualFold(h, "localhost") || h == "127.0.0.1" || h == "::1" {
+		return true
+	}
+	ip := net.ParseIP(h)
+	return ip != nil && ip.IsLoopback()
+}
+
+func isLoopbackRemote(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	return isLoopbackHost(host)
+}
+
+func handleLookup(w http.ResponseWriter, r *http.Request) {
+	explicitServerIP := serverIPFlag
+	if explicitServerIP == "" {
+		explicitServerIP = getEnv("SERVER_IP", getEnv("CONTROLLER_IP", ""))
+	}
+	serverIP := explicitServerIP
 	if serverIP == "" {
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
@@ -42,12 +64,16 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
 			serverIP = host
 		}
 	}
-	if serverIP == "" || serverIP == "localhost" || serverIP == "127.0.0.1" {
+	// Reject unconfigured loopback responses for remote clients, but allow explicit 127.0.0.1 or on-robot loopback callers.
+	if serverIP == "" || (isLoopbackHost(serverIP) && explicitServerIP == "" && !isLoopbackRemote(r.RemoteAddr)) {
 		log.Printf("[LOOKUP] Error: SERVER_IP or CONTROLLER_IP is required (set SERVER_IP env var or -server-ip flag)")
 		http.Error(w, `{"result":"fail","message":"SERVER_IP environment variable or -server-ip flag is required"}`, http.StatusInternalServerError)
 		return
 	}
-	xmppPortStr := getEnv("XMPP_PORT", "5223")
+	xmppPortStr := cfgGlobal.XmppPort
+	if xmppPortStr == "" {
+		xmppPortStr = getEnv("XMPP_PORT", "5223")
+	}
 	xmppPort, _ := strconv.Atoi(xmppPortStr)
 	if xmppPort == 0 {
 		xmppPort = 5223
@@ -61,7 +87,7 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
 			_ = json.Unmarshal(bodyBytes, &req)
 		} else {
 			// Form urlencoded fallback
-			r.ParseForm()
+			_ = r.ParseForm()
 			req.Todo = r.FormValue("todo")
 			req.Service = r.FormValue("service")
 		}
@@ -91,21 +117,36 @@ func handleLookup(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(compactJSON))
+	_, _ = w.Write([]byte(compactJSON))
 }
 
-func startLookupServer() {
-	port := getEnv("LOOKUP_PORT", "8007")
+func startLookupServer(ctx context.Context, port string) error {
+	if port == "" {
+		port = getEnv("LOOKUP_PORT", "8007")
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/lookup.do", handleLookup)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	addr := ":" + port
-	log.Printf("[LOOKUP] Starting HTTP lookup server on %s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
-		log.Printf("[LOOKUP] Server error: %v", err)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return err
 	}
+
+	srv := &http.Server{Handler: mux}
+	log.Printf("[LOOKUP] Starting HTTP lookup server on %s", addr)
+	go func() {
+		<-ctx.Done()
+		_ = srv.Close()
+	}()
+	go func() {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("[LOOKUP] Server error: %v", err)
+		}
+	}()
+	return nil
 }

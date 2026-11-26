@@ -1,7 +1,8 @@
-package main
+package controller
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"image/jpeg"
@@ -14,10 +15,24 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/kushagharahi/ecovacs-privacy-control/pkg/ecovacs"
 )
 
-func setupApi() {
+var (
+	silentGotoFilePath = "/tmp/silent_goto"
+	gotoTargetFilePath = "/tmp/goto_target"
+	gotoStopFilePath   = "/tmp/goto_stop"
+)
+
+func setupApi(ctx context.Context, apiPort string) error {
+	if apiPort == "" {
+		apiPort = "8000"
+	}
 	r := mux.NewRouter()
+	r.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}).Methods("GET")
 	r.HandleFunc("/getMapData", getMapData).Methods("GET", "HEAD")
 	r.HandleFunc("/mapGrid", handleMapGrid).Methods("GET", "HEAD")
 	r.HandleFunc("/status", getStatus).Methods("GET")
@@ -40,8 +55,22 @@ func setupApi() {
 	r.HandleFunc("/silentGoto", handleSilentGoto).Methods("POST", "GET")
 	r.HandleFunc("/goTo", handleGoTo).Methods("POST", "GET")
 	r.HandleFunc("/recoverMap", handleRecoverMap).Methods("POST", "GET")
-	http.Handle("/", r)
-	go http.ListenAndServe(":8000", r)
+
+	ln, err := net.Listen("tcp", ":"+apiPort)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{Handler: r}
+	go func() {
+		<-ctx.Done()
+		_ = srv.Close()
+	}()
+	go func() {
+		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Printf("[API] REST server error: %v", err)
+		}
+	}()
+	return nil
 }
 
 func getMapData(res http.ResponseWriter, req *http.Request) {
@@ -65,26 +94,7 @@ func getMapData(res http.ResponseWriter, req *http.Request) {
 	}
 }
 
-type MapGridResponse struct {
-	Width               int                  `json:"width"`
-	Height              int                  `json:"height"`
-	CropMinX            int                  `json:"crop_min_x"`
-	CropMinY            int                  `json:"crop_min_y"`
-	CropMaxX            int                  `json:"crop_max_x"`
-	CropMaxY            int                  `json:"crop_max_y"`
-	RobotPixelX         int                  `json:"robot_pixel_x"`
-	RobotPixelY         int                  `json:"robot_pixel_y"`
-	PoseValid           bool                 `json:"pose_valid"`
-	ChargerPixelX       int                  `json:"charger_pixel_x"`
-	ChargerPixelY       int                  `json:"charger_pixel_y"`
-	RobotAngle          int                  `json:"robot_angle"`
-	Rooms               []string             `json:"rooms"`
-	RoomNames           map[string]string    `json:"room_names"`
-	RoomPolygons        map[string][][2]int  `json:"room_polygons,omitempty"`
-	VirtualRestrictions []VirtualRestriction `json:"virtual_restrictions"`
-	PathPoints          []PathPoint          `json:"path_points"`
-	Grid                [][]byte             `json:"grid"`
-}
+type MapGridResponse = ecovacs.MapGridResponse
 
 func handleMapGrid(res http.ResponseWriter, req *http.Request) {
 	publishXML(GetMapVirtualWalls)
@@ -179,7 +189,7 @@ func handleMapGrid(res http.ResponseWriter, req *http.Request) {
 	}
 
 	res.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(res).Encode(resp)
+	_ = json.NewEncoder(res).Encode(resp)
 }
 
 func handleRenameRooms(res http.ResponseWriter, req *http.Request) {
@@ -212,7 +222,7 @@ func handleRenameRooms(res http.ResponseWriter, req *http.Request) {
 	roomNamesLock.Unlock()
 
 	res.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(res).Encode(map[string]string{"status": "ok"})
+	_ = json.NewEncoder(res).Encode(map[string]string{"status": "ok"})
 }
 
 func handleVirtualRestrictions(res http.ResponseWriter, req *http.Request) {
@@ -222,7 +232,7 @@ func handleVirtualRestrictions(res http.ResponseWriter, req *http.Request) {
 		copy(restrs, DiscoveredRestrictions)
 		restrictionsLock.Unlock()
 		res.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(res).Encode(map[string]interface{}{
+		_ = json.NewEncoder(res).Encode(map[string]interface{}{
 			"virtual_restrictions": restrs,
 		})
 		return
@@ -266,44 +276,12 @@ func handleVirtualRestrictions(res http.ResponseWriter, req *http.Request) {
 		log.Printf("[MAP] Sent SetVirtualRestrictions (msid=%s): %d walls, %d zones", msid, len(payload.VirtualWalls), len(payload.NoGoAreas))
 
 		res.Header().Set("Content-Type", "application/json")
-		res.Write([]byte(`{"status":"success"}`))
+		_, _ = res.Write([]byte(`{"status":"success"}`))
 		return
 	}
 }
 
-type StatusResponse struct {
-	BatteryLevel         int      `json:"battery_level"`
-	ChargingState        string   `json:"charging_state"`
-	VolumeLevel          int      `json:"volume_level"`
-	WaterLevel           int      `json:"water_level"`
-	WaterBoxInstalled    bool     `json:"water_box_installed"`
-	CarpetBoost          bool     `json:"carpet_boost"`
-	ContinuousClean      bool     `json:"continuous_clean"`
-	VoiceReports         bool     `json:"voice_reports"`
-	DNDEnabled           bool     `json:"dnd_enabled"`
-	TotalCleanCount      int      `json:"total_clean_count"`
-	TotalCleanArea       int      `json:"total_clean_area"`
-	TotalCleanTime       int      `json:"total_clean_time"`
-	CleanSpeed           string   `json:"clean_speed"`
-	SleepStatus          string   `json:"sleep_status"`
-	BrushLifeSpan        int      `json:"brush_lifespan"`
-	SideBrushLifeSpan    int      `json:"side_brush_lifespan"`
-	DustCaseHeapLifeSpan int      `json:"filter_lifespan"`
-	DiscoveredRooms      []string `json:"discovered_rooms"`
-	Errors               string   `json:"errors"`
-	RobotPosX            int      `json:"robot_x"`
-	RobotPosY            int      `json:"robot_y"`
-	RobotAngle           int      `json:"robot_angle"`
-	ChargerPosX          int      `json:"charger_x"`
-	ChargerPosY          int      `json:"charger_y"`
-	RobotPixelX          int      `json:"robot_pixel_x"`
-	RobotPixelY          int      `json:"robot_pixel_y"`
-	PoseValid            bool     `json:"pose_valid"`
-	ChargerPixelX        int      `json:"charger_pixel_x"`
-	ChargerPixelY        int      `json:"charger_pixel_y"`
-	CropMinX             int      `json:"crop_min_x"`
-	CropMinY             int      `json:"crop_min_y"`
-}
+type StatusResponse = ecovacs.StatusResponse
 
 func getStatus(res http.ResponseWriter, req *http.Request) {
 	// Proactively request latest updates from the vacuum
@@ -342,12 +320,6 @@ func getStatus(res http.ResponseWriter, req *http.Request) {
 	pixelChargerX := 0
 	pixelChargerY := 0
 
-	// In our coordinate space:
-	// RobotPosY is the row, RobotPosX is the column in mapInfo.mapGrid.
-	// MapCropMinX is minRow, MapCropMinY is minCol.
-	// On imgRGBA (width = numRows, height = numCols):
-	// pixelX = row - minRow = RobotPosY - MapCropMinX
-	// pixelY = col - minCol = RobotPosX - MapCropMinY
 	if cropMinX > 0 || cropMinY > 0 {
 		if robotPosX >= 0 && robotPosY >= 0 {
 			pixelRobotX = robotPosX - cropMinX
@@ -426,7 +398,7 @@ func getStatus(res http.ResponseWriter, req *http.Request) {
 	}
 
 	res.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(res).Encode(response)
+	_ = json.NewEncoder(res).Encode(response)
 }
 
 func handleClean(res http.ResponseWriter, req *http.Request) {
@@ -456,7 +428,7 @@ func handleClean(res http.ResponseWriter, req *http.Request) {
 	}
 
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(`{"status":"success"}`))
+	_, _ = res.Write([]byte(`{"status":"success"}`))
 }
 
 func handleSetFanSpeed(res http.ResponseWriter, req *http.Request) {
@@ -467,7 +439,7 @@ func handleSetFanSpeed(res http.ResponseWriter, req *http.Request) {
 	CleanSpeed = speed
 	publishXML(SetCleanSpeed(speed))
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(`{"status":"success"}`))
+	_, _ = res.Write([]byte(`{"status":"success"}`))
 }
 
 func handleSetCarpetBoost(res http.ResponseWriter, req *http.Request) {
@@ -477,7 +449,7 @@ func handleSetCarpetBoost(res http.ResponseWriter, req *http.Request) {
 	publishXML(SetOnOff("b", enable))
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(fmt.Sprintf(`{"status":"success","carpet_boost":%v}`, enable)))
+	_, _ = res.Write([]byte(fmt.Sprintf(`{"status":"success","carpet_boost":%v}`, enable)))
 }
 
 func handleSetContinuousClean(res http.ResponseWriter, req *http.Request) {
@@ -487,7 +459,7 @@ func handleSetContinuousClean(res http.ResponseWriter, req *http.Request) {
 	publishXML(SetOnOff("l", enable))
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(fmt.Sprintf(`{"status":"success","continuous_clean":%v}`, enable)))
+	_, _ = res.Write([]byte(fmt.Sprintf(`{"status":"success","continuous_clean":%v}`, enable)))
 }
 
 func handleSetVoiceReports(res http.ResponseWriter, req *http.Request) {
@@ -495,13 +467,10 @@ func handleSetVoiceReports(res http.ResponseWriter, req *http.Request) {
 	enable := enableStr == "true" || enableStr == "1" || enableStr == "ON"
 	VoiceReports = enable
 	// In Ecovacs DR930 firmware: switch 's' is Silent Mode (Hardware Mute).
-	// When Silent Mode is ON (s=1), the firmware executes `amixer sset 'Speaker Mute' on`.
-	// Therefore, VoiceReports = true means Silent Mode = false (s=0).
-	// VoiceReports = false means Silent Mode = true (s=1).
 	publishXML(SetOnOff("s", !enable))
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(fmt.Sprintf(`{"status":"success","voice_reports":%v}`, enable)))
+	_, _ = res.Write([]byte(fmt.Sprintf(`{"status":"success","voice_reports":%v}`, enable)))
 }
 
 func handleDND(res http.ResponseWriter, req *http.Request) {
@@ -515,7 +484,7 @@ func handleDND(res http.ResponseWriter, req *http.Request) {
 	publishXML(SetBlockTimeState(on))
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(fmt.Sprintf(`{"status":"success","dnd_enabled":%v}`, on)))
+	_, _ = res.Write([]byte(fmt.Sprintf(`{"status":"success","dnd_enabled":%v}`, on)))
 }
 
 func handleResetLifeSpan(res http.ResponseWriter, req *http.Request) {
@@ -525,13 +494,13 @@ func handleResetLifeSpan(res http.ResponseWriter, req *http.Request) {
 	}
 	publishXML(ResetLifeSpan(comp))
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(`{"status":"success"}`))
+	_, _ = res.Write([]byte(`{"status":"success"}`))
 }
 
 func handleCharge(res http.ResponseWriter, req *http.Request) {
 	publishXML(Charge(true))
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(`{"status":"success"}`))
+	_, _ = res.Write([]byte(`{"status":"success"}`))
 }
 
 func handleSetVolume(res http.ResponseWriter, req *http.Request) {
@@ -539,12 +508,12 @@ func handleSetVolume(res http.ResponseWriter, req *http.Request) {
 	vol, err := strconv.Atoi(volStr)
 	if err != nil {
 		res.WriteHeader(http.StatusBadRequest)
-		res.Write([]byte(`{"status":"error","message":"invalid level"}`))
+		_, _ = res.Write([]byte(`{"status":"error","message":"invalid level"}`))
 		return
 	}
 	publishXML(SetVolume(vol))
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(`{"status":"success"}`))
+	_, _ = res.Write([]byte(`{"status":"success"}`))
 }
 
 func handleSetWater(res http.ResponseWriter, req *http.Request) {
@@ -552,23 +521,23 @@ func handleSetWater(res http.ResponseWriter, req *http.Request) {
 	level, err := strconv.Atoi(levelStr)
 	if err != nil {
 		res.WriteHeader(http.StatusBadRequest)
-		res.Write([]byte(`{"status":"error","message":"invalid level"}`))
+		_, _ = res.Write([]byte(`{"status":"error","message":"invalid level"}`))
 		return
 	}
 	publishXML(SetWaterPermeability(level))
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(`{"status":"success"}`))
+	_, _ = res.Write([]byte(`{"status":"success"}`))
 }
 
 func handleLocate(res http.ResponseWriter, req *http.Request) {
-	publishXML(PlaySound(SOUND_I_AM_HERE))
+	publishXML(PlaySound(ecovacs.SOUND_I_AM_HERE))
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(`{"status":"success","message":"playing I am here sound"}`))
+	_, _ = res.Write([]byte(`{"status":"success","message":"playing I am here sound"}`))
 }
 
 func handleListSounds(res http.ResponseWriter, req *http.Request) {
 	res.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(res).Encode(AvailableSounds)
+	_ = json.NewEncoder(res).Encode(ecovacs.AvailableSounds)
 }
 
 func handlePlaySound(res http.ResponseWriter, req *http.Request) {
@@ -580,14 +549,16 @@ func handlePlaySound(res http.ResponseWriter, req *http.Request) {
 		http.Error(res, `{"error":"missing sid parameter. Use /sounds to view available IDs."}`, http.StatusBadRequest)
 		return
 	}
-	desc, ok := AvailableSounds[sid]
-	if !ok {
-		desc = "custom sound ID"
+	desc := "custom sound ID"
+	if sidNum, err := strconv.Atoi(sid); err == nil {
+		if d, ok := ecovacs.AvailableSounds[ecovacs.Sound(sidNum)]; ok {
+			desc = d
+		}
 	}
-	publishXML(PlaySound(Sound(sid)))
+	publishXML(PlaySoundSID(sid))
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(http.StatusOK)
-	json.NewEncoder(res).Encode(map[string]string{
+	_ = json.NewEncoder(res).Encode(map[string]string{
 		"status":      "success",
 		"sid":         sid,
 		"description": desc,
@@ -601,14 +572,14 @@ func handleMove(res http.ResponseWriter, req *http.Request) {
 	}
 	publishXML(Move(act))
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(`{"status":"success"}`))
+	_, _ = res.Write([]byte(`{"status":"success"}`))
 }
 
 func handleRecoverMap(res http.ResponseWriter, req *http.Request) {
 	publishXML(RecoverMap)
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(`{"status":"success","action":"RecoverMap"}`))
+	_, _ = res.Write([]byte(`{"status":"success","action":"RecoverMap"}`))
 }
 
 func runRobotTelnetCmd(robotIP, shellCmd string) error {
@@ -629,38 +600,51 @@ func runRobotTelnetCmd(robotIP, shellCmd string) error {
 		n, readErr := conn.Read(buf)
 		if n > 0 {
 			for i := 0; i < n; i++ {
-				if buf[i] == 0xff { i += 2; continue }
-				if buf[i] != 0 { acc.WriteByte(buf[i]) }
+				if buf[i] == 0xff {
+					i += 2
+					continue
+				}
+				if buf[i] != 0 {
+					acc.WriteByte(buf[i])
+				}
 			}
 			text := acc.String()
-			if strings.Contains(text, "__CMD_OK__") { return nil }
+			if strings.Contains(text, "__CMD_OK__") {
+				return nil
+			}
 			lower := strings.ToLower(text)
 			if !sentLogin && (strings.Contains(lower, "login:") || strings.Contains(lower, "username:")) {
-				sentLogin = true; _, _ = conn.Write([]byte("root\r\n")); continue
+				sentLogin = true
+				_, _ = conn.Write([]byte("root\r\n"))
+				continue
 			}
 			if !sentPass && strings.Contains(lower, "password:") {
-				sentPass = true; _, _ = conn.Write([]byte("ecovacs\r\n")); continue
+				sentPass = true
+				_, _ = conn.Write([]byte("ecovacs\r\n"))
+				continue
 			}
 			if !sentCmd && (strings.Contains(text, "# ") || strings.HasSuffix(strings.TrimSpace(text), "#")) {
-				sentCmd = true; _, _ = conn.Write([]byte(fullCmd))
+				sentCmd = true
+				_, _ = conn.Write([]byte(fullCmd))
 			}
 		}
 		if readErr != nil {
 			if ne, ok := readErr.(net.Error); ok && ne.Timeout() && !sentCmd {
 				sentCmd = true
-				if _, wErr := conn.Write([]byte(fullCmd)); wErr != nil { return wErr }
+				if _, wErr := conn.Write([]byte(fullCmd)); wErr != nil {
+					return wErr
+				}
 				continue
 			}
-			if strings.Contains(acc.String(), "__CMD_OK__") { return nil }
+			if strings.Contains(acc.String(), "__CMD_OK__") {
+				return nil
+			}
 			return readErr
 		}
 	}
 }
 
-func handleSilentGoto(res http.ResponseWriter, req *http.Request) {
-	enableStr := req.URL.Query().Get("enable")
-	enable := enableStr == "true" || enableStr == "1" || enableStr == "ON"
-
+func resolveRobotIP() string {
 	robotIP := robotIPFlag
 	if robotIP == "" {
 		robotIP = os.Getenv("ROBOT_IP")
@@ -670,6 +654,45 @@ func handleSilentGoto(res http.ResponseWriter, req *http.Request) {
 			robotIP = bot.RemoteIP()
 		}
 	}
+	return robotIP
+}
+
+func isLocalRobotMode(robotIP string) bool {
+	return localRobot || isLoopbackHost(robotIP)
+}
+
+func setSilentGotoLocal(enable bool) error {
+	if enable {
+		return os.WriteFile(silentGotoFilePath, []byte{}, 0644)
+	}
+	if err := os.Remove(silentGotoFilePath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func handleSilentGoto(res http.ResponseWriter, req *http.Request) {
+	enableStr := req.URL.Query().Get("enable")
+	enable := enableStr == "true" || enableStr == "1" || enableStr == "ON"
+
+	robotIP := resolveRobotIP()
+	if isLocalRobotMode(robotIP) {
+		if err := setSilentGotoLocal(enable); err != nil {
+			log.Printf("[SILENT-GOTO] Local file error: %v", err)
+			http.Error(res, fmt.Sprintf(`{"status":"error","message":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		if enable {
+			log.Printf("[SILENT-GOTO] Created %s locally on robot", silentGotoFilePath)
+		} else {
+			log.Printf("[SILENT-GOTO] Removed %s locally on robot", silentGotoFilePath)
+		}
+		res.Header().Set("Content-Type", "application/json")
+		res.WriteHeader(http.StatusOK)
+		_, _ = res.Write([]byte(fmt.Sprintf(`{"status":"success","silent_goto":%v}`, enable)))
+		return
+	}
+
 	if robotIP == "" {
 		log.Printf("[SILENT-GOTO] Error: ROBOT_IP is required (set ROBOT_IP env var or -robot-ip flag)")
 		http.Error(res, `{"status":"error","message":"ROBOT_IP is required (set ROBOT_IP env var or -robot-ip flag)"}`, http.StatusBadRequest)
@@ -693,7 +716,7 @@ func handleSilentGoto(res http.ResponseWriter, req *http.Request) {
 
 	res.Header().Set("Content-Type", "application/json")
 	res.WriteHeader(http.StatusOK)
-	res.Write([]byte(fmt.Sprintf(`{"status":"success","silent_goto":%v}`, enable)))
+	_, _ = res.Write([]byte(fmt.Sprintf(`{"status":"success","silent_goto":%v}`, enable)))
 }
 
 func handleGoTo(res http.ResponseWriter, req *http.Request) {
@@ -706,14 +729,10 @@ func handleGoTo(res http.ResponseWriter, req *http.Request) {
 		}
 	}
 
-	robotIP := robotIPFlag
-	if robotIP == "" {
-		robotIP = os.Getenv("ROBOT_IP")
-	}
-	if robotIP == "" {
-		if bot := getActiveXmppBot(); bot != nil {
-			robotIP = bot.RemoteIP()
-		}
+	robotIP := resolveRobotIP()
+	localMode := isLocalRobotMode(robotIP)
+	if robotIP == "" && localMode {
+		robotIP = "127.0.0.1"
 	}
 	if robotIP == "" {
 		log.Printf("[GOTO] Error: ROBOT_IP is required (set ROBOT_IP env var or -robot-ip flag)")
@@ -733,8 +752,12 @@ func handleGoTo(res http.ResponseWriter, req *http.Request) {
 			conn.Close()
 			stopped = true
 		}
-		// Also touch /tmp/goto_stop via Telnet as safety fallback
-		if conn, err := net.DialTimeout("tcp", net.JoinHostPort(robotIP, "23"), 2*time.Second); err == nil {
+		if localMode {
+			if err := os.WriteFile(gotoStopFilePath, []byte{}, 0644); err == nil {
+				stopped = true
+			}
+			_ = setSilentGotoLocal(false)
+		} else if conn, err := net.DialTimeout("tcp", net.JoinHostPort(robotIP, "23"), 2*time.Second); err == nil {
 			defer conn.Close()
 			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 			time.Sleep(50 * time.Millisecond)
@@ -743,7 +766,7 @@ func handleGoTo(res http.ResponseWriter, req *http.Request) {
 		}
 		if stopped {
 			res.WriteHeader(http.StatusOK)
-			res.Write([]byte(`{"status":"success","action":"stopped"}`))
+			_, _ = res.Write([]byte(`{"status":"success","action":"stopped"}`))
 		} else {
 			http.Error(res, `{"status":"error","message":"failed to connect to robot"}`, http.StatusInternalServerError)
 		}
@@ -781,6 +804,16 @@ func handleGoTo(res http.ResponseWriter, req *http.Request) {
 		conn.Close()
 	}
 
+	if !started && localMode {
+		payload := fmt.Sprintf("%d %d\n", x, y)
+		if err := os.WriteFile(gotoTargetFilePath, []byte(payload), 0644); err != nil {
+			http.Error(res, fmt.Sprintf(`{"status":"error","message":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		log.Printf("[GOTO] Wrote target locally to %s", gotoTargetFilePath)
+		started = true
+	}
+
 	// Fallback via Telnet (writes /tmp/goto_target trigger)
 	if !started {
 		conn, err := net.DialTimeout("tcp", net.JoinHostPort(robotIP, "23"), 2*time.Second)
@@ -799,13 +832,10 @@ func handleGoTo(res http.ResponseWriter, req *http.Request) {
 	}
 
 	res.WriteHeader(http.StatusOK)
-	json.NewEncoder(res).Encode(map[string]interface{}{
+	_ = json.NewEncoder(res).Encode(map[string]interface{}{
 		"status": "success",
 		"action": "start",
 		"x":      x,
 		"y":      y,
 	})
 }
-
-
-

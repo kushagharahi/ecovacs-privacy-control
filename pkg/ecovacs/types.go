@@ -70,6 +70,7 @@ type MapGridResponse struct {
 	CropMaxY            int                  `json:"crop_max_y"`
 	RobotPixelX         int                  `json:"robot_pixel_x"`
 	RobotPixelY         int                  `json:"robot_pixel_y"`
+	PoseValid           bool                 `json:"pose_valid"`
 	ChargerPixelX       int                  `json:"charger_pixel_x"`
 	ChargerPixelY       int                  `json:"charger_pixel_y"`
 	RobotAngle          int                  `json:"robot_angle"`

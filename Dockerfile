@@ -21,11 +21,12 @@ RUN openssl genrsa -out ca.key 4096 && \
 FROM golang:1.22-alpine AS go-builder
 WORKDIR /build
 
-COPY api_client/go.mod api_client/go.sum* ./
+COPY go.mod go.sum* ./
 RUN go mod download
 
-COPY api_client/ ./
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /build/ecovacs-controller .
+COPY pkg/ ./pkg/
+COPY api_client/ ./api_client/
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /build/ecovacs-controller ./api_client
 
 # -----------------------------------------------------------------
 # Target: xmpp (Lightweight OZMO 930 Privacy Server - NO Mosquitto)

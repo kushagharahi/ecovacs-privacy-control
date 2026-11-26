@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kushagharahi/ecovacs-privacy-control/pkg/habridge"
 )
 
 func TestCancelActiveGoToSingleCleanupAndNoOp(t *testing.T) {
@@ -20,45 +22,27 @@ func TestCancelActiveGoToSingleCleanupAndNoOp(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	origURL := *controllerURL
-	*controllerURL = srv.URL
-	defer func() { *controllerURL = origURL }()
-
-	cli := srv.Client()
+	b := habridge.NewBridge(habridge.Config{
+		ControllerURL: srv.URL,
+		RobotSN:       "SN_TEST",
+		MQTTBroker:    "tcp://127.0.0.1:1883",
+	}, srv.Client())
 
 	// 1. No active GoTo -> zero HTTP calls
-	activeGoToLock.Lock()
-	activeGoToCancel = nil
-	activeGoToDone = nil
-	activeGoToLock.Unlock()
-
-	cancelActiveGoTo(cli)
+	b.CancelActiveGoTo()
 	mu.Lock()
 	if len(calls) != 0 {
 		t.Fatalf("expected 0 calls when no GoTo active, got %v", calls)
 	}
 	mu.Unlock()
 
-	// 2. Active watcher cancelled -> exactly one stop + silentGoto=0 sequence
+	// 2. Active watcher cancelled -> single stop + silentGoto=0 sequence
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	activeGoToLock.Lock()
-	activeGoToID++
-	myID := activeGoToID
-	activeGoToCancel = cancel
-	activeGoToDone = done
-	activeGoToLock.Unlock()
+	b.SetActiveGoToForTest(cancel, done)
 
 	go func() {
-		defer func() {
-			activeGoToLock.Lock()
-			if activeGoToID == myID {
-				activeGoToCancel = nil
-				activeGoToDone = nil
-			}
-			activeGoToLock.Unlock()
-			close(done)
-		}()
+		defer close(done)
 		<-ctx.Done()
 	}()
 
@@ -67,14 +51,14 @@ func TestCancelActiveGoToSingleCleanupAndNoOp(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cancelActiveGoTo(cli)
+			b.CancelActiveGoTo()
 		}()
 	}
 	wg.Wait()
 	select {
 	case <-done:
 	case <-time.After(time.Second):
-		t.Fatal("watcher did not exit after cancelActiveGoTo")
+		t.Fatal("watcher did not exit after CancelActiveGoTo")
 	}
 
 	mu.Lock()
