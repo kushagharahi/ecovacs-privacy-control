@@ -3,6 +3,8 @@ Privacy first API control for Ecovacs xmpp based vacs -- tested with Ecovacs ~~D
 
 Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local API that runs completely on the robot, no external services/server needed.
 
+![Without vs With ecovacs-privacy-control](docs/architecture.jpg)
+
 > [!WARNING]
 > There is a lot of AI slop in this repo. Take a backup of your robot's data partition before you start messing with it:
 > ```bash
