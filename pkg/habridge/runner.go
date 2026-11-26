@@ -766,93 +766,119 @@ func (b *Bridge) startMapLoop(ctx context.Context, c mqtt.Client, topicPrefix st
 		var img image.Image
 		var roomPolygons map[string][][2]int
 		usedRawGrid := false
+		mapGridOK := false
+
+		attrRobotX := curStatus.RobotPixelX
+		attrRobotY := curStatus.RobotPixelY
+		attrChargerX := curStatus.ChargerPixelX
+		attrChargerY := curStatus.ChargerPixelY
+		attrPoseValid := curStatus.PoseValid
+		attrAngle := curStatus.RobotAngle
+		attrCropMinX := curStatus.CropMinX
+		attrCropMinY := curStatus.CropMinY
 
 		if gResp, err := b.httpCli.Get(b.cfg.ControllerURL + "/mapGrid"); err == nil {
 			var mapGrid ecovacs.MapGridResponse
-			if json.NewDecoder(gResp.Body).Decode(&mapGrid) == nil && len(mapGrid.Grid) > 0 {
-				roomPolygons = mapGrid.RoomPolygons
-				b.cropOffsetLock.Lock()
-				b.lastCropMinX = mapGrid.CropMinX
-				b.lastCropMinY = mapGrid.CropMinY
-				b.lastMapW = len(mapGrid.Grid)
-				b.lastMapH = len(mapGrid.Grid[0])
-				b.cropOffsetLock.Unlock()
+			if gResp.StatusCode == http.StatusOK && json.NewDecoder(gResp.Body).Decode(&mapGrid) == nil {
+				mapGridOK = true
+				if len(mapGrid.Grid) > 0 {
+					roomPolygons = mapGrid.RoomPolygons
+					b.cropOffsetLock.Lock()
+					b.lastCropMinX = mapGrid.CropMinX
+					b.lastCropMinY = mapGrid.CropMinY
+					b.lastMapW = len(mapGrid.Grid)
+					b.lastMapH = len(mapGrid.Grid[0])
+					b.cropOffsetLock.Unlock()
 
-				if curStatus.ChargingState == "SlotCharging" || curStatus.ChargingState == "Charging" {
-					mapGrid.RobotPixelX = mapGrid.ChargerPixelX
-					mapGrid.RobotPixelY = mapGrid.ChargerPixelY
-					curStatus.RobotPixelX = curStatus.ChargerPixelX
-					curStatus.RobotPixelY = curStatus.ChargerPixelY
-					curStatus.PoseValid = true
-				}
-
-				vMap = ExportGridToValetudoMap(
-					mapGrid.Grid,
-					b.cfg.RobotSN,
-					mapGrid.ChargerPixelX,
-					mapGrid.ChargerPixelY,
-					mapGrid.RobotPixelX,
-					mapGrid.RobotPixelY,
-					mapGrid.RobotAngle,
-					mapGrid.Rooms,
-					mapGrid.RoomNames,
-					mapGrid.VirtualRestrictions,
-					mapGrid.PathPoints,
-					mapGrid.CropMinX,
-					mapGrid.CropMinY,
-				)
-				img = GridToImage(
-					mapGrid.Grid,
-					mapGrid.ChargerPixelX,
-					mapGrid.ChargerPixelY,
-					mapGrid.RobotPixelX,
-					mapGrid.RobotPixelY,
-					mapGrid.RobotAngle,
-					mapGrid.VirtualRestrictions,
-					mapGrid.PathPoints,
-					mapGrid.CropMinX,
-					mapGrid.CropMinY,
-				)
-				usedRawGrid = true
-
-				offsetWorldX := (400 - mapGrid.CropMinX) * 50
-				offsetWorldY := (400 - mapGrid.CropMinY) * 50
-				var vwList []map[string]interface{}
-				var nogoList []map[string]interface{}
-				for _, r := range mapGrid.VirtualRestrictions {
-					if r.Type == "virtual_wall" && len(r.Points) == 4 {
-						vwList = append(vwList, map[string]interface{}{
-							"points": map[string]interface{}{
-								"pA": map[string]int{"x": r.Points[0] + offsetWorldX, "y": r.Points[1] + offsetWorldY},
-								"pB": map[string]int{"x": r.Points[2] + offsetWorldX, "y": r.Points[3] + offsetWorldY},
-							},
-						})
-					} else if r.Type == "no_go_area" && len(r.Points) == 8 {
-						nogoList = append(nogoList, map[string]interface{}{
-							"points": map[string]interface{}{
-								"pA": map[string]int{"x": r.Points[0] + offsetWorldX, "y": r.Points[1] + offsetWorldY},
-								"pB": map[string]int{"x": r.Points[2] + offsetWorldX, "y": r.Points[3] + offsetWorldY},
-								"pC": map[string]int{"x": r.Points[4] + offsetWorldX, "y": r.Points[5] + offsetWorldY},
-								"pD": map[string]int{"x": r.Points[6] + offsetWorldX, "y": r.Points[7] + offsetWorldY},
-							},
-						})
+					if (curStatus.ChargingState == "SlotCharging" || curStatus.ChargingState == "Charging") &&
+						mapGrid.ChargerPixelX >= 0 && mapGrid.ChargerPixelY >= 0 {
+						mapGrid.RobotPixelX = mapGrid.ChargerPixelX
+						mapGrid.RobotPixelY = mapGrid.ChargerPixelY
+						mapGrid.PoseValid = true
 					}
+
+					attrRobotX = mapGrid.RobotPixelX
+					attrRobotY = mapGrid.RobotPixelY
+					attrChargerX = mapGrid.ChargerPixelX
+					attrChargerY = mapGrid.ChargerPixelY
+					attrPoseValid = mapGrid.PoseValid
+					attrAngle = mapGrid.RobotAngle
+					attrCropMinX = mapGrid.CropMinX
+					attrCropMinY = mapGrid.CropMinY
+
+					vMap = ExportGridToValetudoMap(
+						mapGrid.Grid,
+						b.cfg.RobotSN,
+						mapGrid.ChargerPixelX,
+						mapGrid.ChargerPixelY,
+						mapGrid.RobotPixelX,
+						mapGrid.RobotPixelY,
+						mapGrid.RobotAngle,
+						mapGrid.Rooms,
+						mapGrid.RoomNames,
+						mapGrid.VirtualRestrictions,
+						mapGrid.PathPoints,
+						mapGrid.CropMinX,
+						mapGrid.CropMinY,
+					)
+					img = GridToImage(
+						mapGrid.Grid,
+						mapGrid.ChargerPixelX,
+						mapGrid.ChargerPixelY,
+						mapGrid.RobotPixelX,
+						mapGrid.RobotPixelY,
+						mapGrid.RobotAngle,
+						mapGrid.VirtualRestrictions,
+						mapGrid.PathPoints,
+						mapGrid.CropMinX,
+						mapGrid.CropMinY,
+					)
+					usedRawGrid = true
+
+					offsetWorldX := (400 - mapGrid.CropMinX) * 50
+					offsetWorldY := (400 - mapGrid.CropMinY) * 50
+					var vwList []map[string]interface{}
+					var nogoList []map[string]interface{}
+					for _, r := range mapGrid.VirtualRestrictions {
+						if r.Type == "virtual_wall" && len(r.Points) == 4 {
+							vwList = append(vwList, map[string]interface{}{
+								"points": map[string]interface{}{
+									"pA": map[string]int{"x": r.Points[0] + offsetWorldX, "y": r.Points[1] + offsetWorldY},
+									"pB": map[string]int{"x": r.Points[2] + offsetWorldX, "y": r.Points[3] + offsetWorldY},
+								},
+							})
+						} else if r.Type == "no_go_area" && len(r.Points) == 8 {
+							nogoList = append(nogoList, map[string]interface{}{
+								"points": map[string]interface{}{
+									"pA": map[string]int{"x": r.Points[0] + offsetWorldX, "y": r.Points[1] + offsetWorldY},
+									"pB": map[string]int{"x": r.Points[2] + offsetWorldX, "y": r.Points[3] + offsetWorldY},
+									"pC": map[string]int{"x": r.Points[4] + offsetWorldX, "y": r.Points[5] + offsetWorldY},
+									"pD": map[string]int{"x": r.Points[6] + offsetWorldX, "y": r.Points[7] + offsetWorldY},
+								},
+							})
+						}
+					}
+					restrPayload, _ := json.Marshal(map[string]interface{}{
+						"virtual_walls": vwList,
+						"no_go_areas":   nogoList,
+					})
+					c.Publish(fmt.Sprintf("%s/CombinedVirtualRestrictionsCapability", topicPrefix), 0, true, restrPayload)
+				} else {
+					img = ecovacs.RenderNoMapImage()
+					vMap = NewEmptyValetudoMap(b.cfg.RobotSN)
+					c.Publish(fmt.Sprintf("%s/CombinedVirtualRestrictionsCapability", topicPrefix), 0, true, `{"virtual_walls":[],"no_go_areas":[]}`)
 				}
-				restrPayload, _ := json.Marshal(map[string]interface{}{
-					"virtual_walls": vwList,
-					"no_go_areas":   nogoList,
-				})
-				c.Publish(fmt.Sprintf("%s/CombinedVirtualRestrictionsCapability", topicPrefix), 0, true, restrPayload)
 			}
 			gResp.Body.Close()
 		}
 
 		var imgBytes []byte
-		if !usedRawGrid {
+		if !usedRawGrid && !mapGridOK {
 			resp, err := b.httpCli.Get(b.cfg.ControllerURL + "/getMapData")
 			if err != nil {
 				return
 			}
+			isEmptyHeader := resp.Header.Get("X-Map-Empty") == "true"
 			imgBytes, err = io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if err != nil || len(imgBytes) == 0 {
@@ -863,19 +889,25 @@ func (b *Bridge) startMapLoop(ctx context.Context, c mqtt.Client, topicPrefix st
 			if err != nil {
 				return
 			}
-			img = DrawEntitiesOnImage(
-				decodedImg,
-				curStatus.ChargerPixelX,
-				curStatus.ChargerPixelY,
-				curStatus.RobotPixelX,
-				curStatus.RobotPixelY,
-				curStatus.RobotAngle,
-				nil,
-				nil,
-				curStatus.CropMinX,
-				curStatus.CropMinY,
-			)
-			vMap = ExportImageToValetudoMap(img, b.cfg.RobotSN, curStatus.ChargerPixelX, curStatus.ChargerPixelY, curStatus.RobotPixelX, curStatus.RobotPixelY, curStatus.RobotAngle)
+			if isEmptyHeader || decodedImg.Bounds().Dx() <= 1 || decodedImg.Bounds().Dy() <= 1 {
+				img = ecovacs.RenderNoMapImage()
+				vMap = NewEmptyValetudoMap(b.cfg.RobotSN)
+				imgBytes = nil
+			} else {
+				img = DrawEntitiesOnImage(
+					decodedImg,
+					curStatus.ChargerPixelX,
+					curStatus.ChargerPixelY,
+					curStatus.RobotPixelX,
+					curStatus.RobotPixelY,
+					curStatus.RobotAngle,
+					nil,
+					nil,
+					curStatus.CropMinX,
+					curStatus.CropMinY,
+				)
+				vMap = ExportImageToValetudoMap(img, b.cfg.RobotSN, curStatus.ChargerPixelX, curStatus.ChargerPixelY, curStatus.RobotPixelX, curStatus.RobotPixelY, curStatus.RobotAngle)
+			}
 		}
 
 		if vMap == nil || img == nil {
@@ -910,11 +942,15 @@ func (b *Bridge) startMapLoop(ctx context.Context, c mqtt.Client, topicPrefix st
 		}
 
 		attrPayload := map[string]interface{}{
-			"last_updated":  time.Now().Unix(),
-			"robot_pixel_x": curStatus.RobotPixelX,
-			"robot_pixel_y": curStatus.RobotPixelY,
-			"pose_valid":    curStatus.PoseValid,
-			"robot_angle":   curStatus.RobotAngle,
+			"last_updated":    time.Now().Unix(),
+			"robot_pixel_x":   attrRobotX,
+			"robot_pixel_y":   attrRobotY,
+			"charger_pixel_x": attrChargerX,
+			"charger_pixel_y": attrChargerY,
+			"pose_valid":      attrPoseValid,
+			"robot_angle":     attrAngle,
+			"crop_min_x":      attrCropMinX,
+			"crop_min_y":      attrCropMinY,
 		}
 		if attrJSON, err := json.Marshal(attrPayload); err == nil {
 			c.Publish(fmt.Sprintf("%s/vacuum_attributes", topicPrefix), 0, true, attrJSON)

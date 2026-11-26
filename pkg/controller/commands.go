@@ -182,9 +182,12 @@ func SetVirtualRestrictions(msid string, walls [][4]int, zones [][8]int) XMLMsg 
 		"-tp":   "vw",
 		"-msid": msid,
 	}
-	if len(mList) > 0 {
-		opts["m"] = mList
+	if len(mList) == 0 {
+		// OZMO 930 firmware ignores an empty SetM tp="vw" without <m> children;
+		// write a sentinel off-map segment which responses.go filters out on readback.
+		mList = append(mList, mxj.Map{"-v": "[-19000,-19000,-18000,-19000]"})
 	}
+	opts["m"] = mList
 	return XMLMsg{
 		cmdName: "SetM",
 		cmdOpts: opts,

@@ -134,7 +134,7 @@ class TelnetSession:
         self.run_cmd(f"mv {tmp_path} {remote_path} && chmod 644 {remote_path}", wait_secs=3.0)
 
 
-def generate_autostart_script(robot_sn, dock_x, dock_y):
+def generate_autostart_script(robot_sn):
     env_lines = [
         "SERVER_IP=127.0.0.1",
         "ROBOT_IP=127.0.0.1",
@@ -145,10 +145,6 @@ def generate_autostart_script(robot_sn, dock_x, dock_y):
     ]
     if robot_sn:
         env_lines.append(f"ROBOT_SN={robot_sn}")
-    if dock_x is not None:
-        env_lines.append(f"ROBOT_DOCK_PIXEL_X={dock_x}")
-    if dock_y is not None:
-        env_lines.append(f"ROBOT_DOCK_PIXEL_Y={dock_y}")
 
     env_block = " \\\n        ".join(env_lines)
     return f"""#!/bin/sh
@@ -225,8 +221,6 @@ def main():
     parser.add_argument("--robot-ip", default=os.getenv("ROBOT_IP"), required=not os.getenv("ROBOT_IP"), help="Robot IP address")
     parser.add_argument("--port", type=int, default=23, help="Telnet port (default: 23)")
     parser.add_argument("--robot-sn", default=os.getenv("ROBOT_SN", ""), help="Robot serial number")
-    parser.add_argument("--dock-x", type=int, default=179, help="Dock X pixel coordinate override")
-    parser.add_argument("--dock-y", type=int, default=133, help="Dock Y pixel coordinate override")
     parser.add_argument("--custom-sounds", default=os.getenv("CUSTOM_SOUNDS", ""), help="Custom sounds JSON or id:name,id:name")
     parser.add_argument("--restart", action="store_true", help="Restart /data/autostart/25-ecovacs-bot.sh immediately")
     parser.add_argument("--lb-hot-switch", action="store_true", help="Update /data/config/medusa/lb.conf to 127.0.0.1 and switch running medusa via mdsctl")
@@ -280,7 +274,7 @@ def main():
             session.run_cmd("cat << 'EOF_SOUNDS' > /data/custom_sounds.json\n" + sounds_json + "\nEOF_SOUNDS")
 
         print("[CONFIG] Installing /data/autostart/25-ecovacs-bot.sh...")
-        autostart_sh = generate_autostart_script(args.robot_sn, args.dock_x, args.dock_y)
+        autostart_sh = generate_autostart_script(args.robot_sn)
         session.run_cmd("mkdir -p /data/autostart /data/ecovacs-certs /data/config/medusa")
         session.run_cmd("cat << 'EOF_AUTO' > /data/autostart/25-ecovacs-bot.sh\n" + autostart_sh + "\nEOF_AUTO")
         session.run_cmd("chmod 755 /data/autostart/25-ecovacs-bot.sh")

@@ -1,9 +1,14 @@
 package habridge
 
 import (
+	"bytes"
 	"encoding/json"
+	"image"
+	"image/png"
 	"reflect"
 	"testing"
+
+	"github.com/kushagharahi/ecovacs-privacy-control/pkg/ecovacs"
 )
 
 func TestBuildCameraRoomsPolygonsAndFallback(t *testing.T) {
@@ -88,5 +93,57 @@ func TestBuildCameraRoomsPolygonsAndFallback(t *testing.T) {
 		if _, ok := decoded[key]; !ok {
 			t.Fatalf("expected %q to be preserved when 0, JSON=%s", key, string(raw))
 		}
+	}
+}
+
+func TestGridToImagePremultipliedPathColor(t *testing.T) {
+	grid := make([][]byte, 24)
+	for x := range grid {
+		grid[x] = make([]byte, 24)
+		for y := range grid[x] {
+			grid[x][y] = 4 // Room A
+		}
+	}
+
+	// Path running horizontally from x=4 to x=12 at y=10 (with cropMin=(390,390) -> offsetWorld=(500,500))
+	pts := []ecovacs.PathPoint{
+		{X: 4*50 - 500, Y: 10*50 - 500, Connected: false},
+		{X: 12*50 - 500, Y: 10*50 - 500, Connected: true},
+	}
+
+	img := GridToImage(grid, 20, 20, 20, 20, 90, nil, pts, 390, 390)
+	pngBytes, err := EncodePNGWithValetudoMap(img, NewEmptyValetudoMap("SN123"))
+	if err != nil || len(pngBytes) == 0 {
+		t.Fatalf("EncodePNGWithValetudoMap failed: %v", err)
+	}
+	decoded, err := png.Decode(bytes.NewReader(pngBytes))
+	if err != nil {
+		t.Fatalf("png.Decode failed: %v", err)
+	}
+
+	// Verify path pixel at (8, 10) encodes as sky-blue (128, 216, 255) without RGBA premultiplied overflow
+	r, g, b, _ := decoded.At(8, 10).RGBA()
+	if (r>>8) != 128 || (g>>8) != 216 || (b>>8) != 255 {
+		t.Fatalf("path pixel at (8,10) corrupted: R=%d G=%d B=%d, want 128,216,255", r>>8, g>>8, b>>8)
+	}
+}
+
+func TestNoMapPlaceholderReplacesSavedMapFallback(t *testing.T) {
+	emptyImg := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	vMap := ExportImageToValetudoMap(emptyImg, "SN_EMPTY", 10, 10, 10, 10, 90)
+	if len(vMap.Layers) != 0 || len(vMap.Entities) != 0 {
+		t.Fatalf("expected empty ValetudoMap layers and entities when no map, got layers=%d entities=%d", len(vMap.Layers), len(vMap.Entities))
+	}
+
+	pngBytes, err := EncodePNGWithValetudoMap(emptyImg, vMap)
+	if err != nil {
+		t.Fatalf("EncodePNGWithValetudoMap failed: %v", err)
+	}
+	decodedPNG, err := png.Decode(bytes.NewReader(pngBytes))
+	if err != nil {
+		t.Fatalf("png.Decode failed: %v", err)
+	}
+	if decodedPNG.Bounds().Dx() != ecovacs.NoMapPlaceholderWidth || decodedPNG.Bounds().Dy() != ecovacs.NoMapPlaceholderHeight {
+		t.Fatalf("placeholder bounds = %v, want %dx%d", decodedPNG.Bounds(), ecovacs.NoMapPlaceholderWidth, ecovacs.NoMapPlaceholderHeight)
 	}
 }

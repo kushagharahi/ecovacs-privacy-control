@@ -10,6 +10,8 @@
 #include <pthread.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <math.h>
+#include <errno.h>
 
 /*
  * libpersistmap: Ecovacs Deebot OZMO 930 Map Preservation & Recovery Patch
@@ -54,13 +56,17 @@ static uint32_t (*real_MdsStopCurTask)(int ctx) = NULL;
 static uint32_t (*real_MDSMotorControl)(int ctx) = NULL;
 static void (*real_MDSReportTaskState)(int ctx) = NULL;
 static uint32_t (*real_onMainTaskFinished)(int ctx, int *task, int *msg) = NULL;
+static uint32_t (*real_MdsStartReturnTask)(int ctx, uint32_t flag, int *param_3) = NULL;
+static uint32_t (*real_onTaskInterrupted)(int ctx, void *elem, void *msg) = NULL;
 static void (*real_rst_removeAllSavedFiles)(void) = NULL;
 static int (*real_rst_removeRbpfMapAndPose)(const char *map, const char *carpet, const char *pose) = NULL;
 static int (*real_rst_removeErgodicData)(const char *path) = NULL;
 static int (*real_rst_removeChargerStand)(const char *path) = NULL;
 static int (*real_rst_removeVirtualWall)(const char *path) = NULL;
 static char *(*real_iks_find_attrib)(void *x, const char *name) = NULL;
-static void *(*real_MdsTaskManagerFindTask)(int ctx, int task_type) = NULL;
+static int (*real_MdsHasWorkToDo)(int ctx) = NULL;
+static int *(*real_MdsGetNextMoveTask)(int ctx) = NULL;
+static int *(*real_getCurrentExecuteSubTask)(void *wt) = NULL;
 
 static pthread_mutex_t g_log_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_sym_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -101,6 +107,118 @@ static void log_persist(const char *fmt, ...) {
         fclose(f);
     }
     pthread_mutex_unlock(&g_log_mutex);
+}
+
+static float wrap_angle_diff(float a, float b) {
+    float d = a - b;
+    const float pi = 3.14159265f;
+    while (d > pi) d -= 2.0f * pi;
+    while (d < -pi) d += 2.0f * pi;
+    return d;
+}
+
+static int read_pose_file(const char *path, float out_pose[3]) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return 0;
+    size_t n = fread(out_pose, sizeof(float), 3, fp);
+    fclose(fp);
+    return (n == 3 && isfinite(out_pose[0]) && isfinite(out_pose[1]) && isfinite(out_pose[2]));
+}
+
+static int write_pose_file_atomic(const char *path, const float pose[3]) {
+    char tmp_path[256];
+    if (snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path) >= (int)sizeof(tmp_path)) {
+        return -1;
+    }
+    FILE *fp = fopen(tmp_path, "wb");
+    if (!fp) {
+        log_persist("[PERSIST-MAP] Failed to open %s for dock sync: errno=%d\n", tmp_path, errno);
+        return -1;
+    }
+    size_t n = fwrite(pose, sizeof(float), 3, fp);
+    int flush_err = fflush(fp);
+    int fd = fileno(fp);
+    int sync_err = (fd >= 0) ? fsync(fd) : 0;
+    if (sync_err != 0 && errno == EINVAL) sync_err = 0;
+    int close_err = fclose(fp);
+    if (n != 3 || flush_err != 0 || sync_err != 0 || close_err != 0) {
+        log_persist("[PERSIST-MAP] Failed writing %s (n=%zu, errno=%d)\n", tmp_path, n, errno);
+        return -1;
+    }
+    if (rename(tmp_path, path) != 0) {
+        log_persist("[PERSIST-MAP] Failed renaming %s -> %s (errno=%d)\n", tmp_path, path, errno);
+        return -1;
+    }
+    return 0;
+}
+
+static int pose_differs(const float a[3], const float b[3]) {
+    return (fabsf(a[0] - b[0]) > 150.0f ||
+            fabsf(a[1] - b[1]) > 150.0f ||
+            fabsf(wrap_angle_diff(a[2], b[2])) > 0.2f);
+}
+
+static int is_robot_on_charger(int ctx) {
+    if (!real_MDSElemCastMsg) {
+        real_MDSElemCastMsg = dlsym(RTLD_NEXT, "MDSElemCastMsg");
+    }
+    if (!real_MDSElemCastMsg || ctx == 0) return 0;
+    int on_chg = 0;
+    int ch_cmd[2] = {1, (int)(long)&on_chg};
+    real_MDSElemCastMsg(ctx, "CH_SIG", ch_cmd);
+    return on_chg != 0;
+}
+
+static void sync_dock_pose(int ctx, const char *reason) {
+    if (ctx == 0) return;
+
+    float dock[3] = {
+        *(float *)(ctx + 0x168),
+        *(float *)(ctx + 0x16c),
+        *(float *)(ctx + 0x170)
+    };
+    if (!isfinite(dock[0]) || !isfinite(dock[1]) || !isfinite(dock[2])) return;
+    if (fabsf(dock[0]) < 1.0f && fabsf(dock[1]) < 1.0f) return;
+
+    float front[3] = {
+        dock[0] - 300.0f * cosf(dock[2]),
+        dock[1] - 300.0f * sinf(dock[2]),
+        dock[2]
+    };
+
+    /* Firmware relocOnChgOk updates savedDockPose (0x168) but skips chargerFrontPose (0x17c). */
+    *(float *)(ctx + 0x15c) = front[0];
+    *(float *)(ctx + 0x160) = front[1];
+    *(float *)(ctx + 0x164) = front[2];
+    *(float *)(ctx + 0x17c) = front[0];
+    *(float *)(ctx + 0x180) = front[1];
+    *(float *)(ctx + 0x184) = front[2];
+
+    if (!real_MDSElemCastMsg) {
+        real_MDSElemCastMsg = dlsym(RTLD_NEXT, "MDSElemCastMsg");
+    }
+    if (real_MDSElemCastMsg) {
+        float poses[6] = { dock[0], dock[1], dock[2], front[0], front[1], front[2] };
+        int status = 0;
+        int req[5] = { 6, 0, (int)(long)poses, 0, (int)(long)&status };
+        real_MDSElemCastMsg(ctx, "SV_MAP_RQ", req);
+    }
+
+    float old_dock[3] = {0}, old_front[3] = {0};
+    int have_dock = read_pose_file(RESTORE_POSE_FILE, old_dock);
+    int have_front = read_pose_file(RESTORE_CHARGER_FILE, old_front);
+    if (!have_dock || !have_front || pose_differs(old_dock, dock) || pose_differs(old_front, front)) {
+        if (write_pose_file_atomic(RESTORE_POSE_FILE, dock) == 0 &&
+            write_pose_file_atomic(RESTORE_CHARGER_FILE, front) == 0) {
+            log_persist("[PERSIST-MAP] Synced dock pose (%s): dock=(%.1f,%.1f,%.3f) front=(%.1f,%.1f,%.3f)\n",
+                        reason, dock[0], dock[1], dock[2], front[0], front[1], front[2]);
+            syslog(LOG_INFO, "[PERSIST-MAP] Synced dock pose (%s): dock=(%.1f,%.1f,%.3f)",
+                   reason, dock[0], dock[1], dock[2]);
+        }
+    } else {
+        log_persist("[PERSIST-MAP] Verified dock frontPose (%s): front=(%.1f,%.1f,%.3f)\n",
+                    reason, front[0], front[1], front[2]);
+    }
 }
 
 static int is_medusa_process(void) {
@@ -283,12 +401,34 @@ uint32_t onMainTaskFinished(int ctx, int *task, int *msg) {
             int reloc_ok = (res != NULL && *res != 0);
 
             if (reloc_type == 0 && !reloc_ok) {
-                if (!real_MdsTaskManagerFindTask)
-                    real_MdsTaskManagerFindTask = resolve_lib_sym(&g_mmi_handle, MMI_PERIPH_PLUGIN, "MdsTaskManagerFindTask", RTLD_NEXT);
-                void *clean_task = real_MdsTaskManagerFindTask ? real_MdsTaskManagerFindTask(ctx, 0) : NULL;
-                void *return_task = real_MdsTaskManagerFindTask ? real_MdsTaskManagerFindTask(ctx, 3) : NULL;
-                if (clean_task != NULL && return_task == NULL) {
-                    log_persist("[PERSIST-MAP] Relocation failed with clean task queued: running RAM fallback clean (flash map preserved).\n");
+                if (!real_MdsHasWorkToDo)
+                    real_MdsHasWorkToDo = resolve_lib_sym(&g_mmi_handle, MMI_PERIPH_PLUGIN, "MdsHasWorkToDo", RTLD_NEXT);
+                if (!real_MdsGetNextMoveTask)
+                    real_MdsGetNextMoveTask = resolve_lib_sym(&g_mmi_handle, MMI_PERIPH_PLUGIN, "MdsGetNextMoveTask", RTLD_NEXT);
+                if (!real_getCurrentExecuteSubTask)
+                    real_getCurrentExecuteSubTask = resolve_lib_sym(&g_mmi_handle, MMI_PERIPH_PLUGIN, "getCurrentExecuteSubTask", RTLD_NEXT);
+
+                int has_work = real_MdsHasWorkToDo ? real_MdsHasWorkToDo(ctx) : 0;
+                int *next_move = real_MdsGetNextMoveTask ? real_MdsGetNextMoveTask(ctx) : NULL;
+                int next_move_type = (next_move != NULL && *next_move != 0) ? *(int *)((intptr_t)*next_move + 0x2c) : -1;
+
+                /* Subtask param[0]: 1/2 = Auto/Ergodic, 3 = SpotArea (Room), 5 = Spot, 6 = CustomArea (Zone). */
+                int clean_subtype = -1;
+                if (next_move_type == 0) {
+                    if (next_move[1] != 0) {
+                        clean_subtype = *(int *)(intptr_t)next_move[1];
+                    }
+                    if (clean_subtype < 0 && real_getCurrentExecuteSubTask) {
+                        int *sub_wt = real_getCurrentExecuteSubTask(next_move);
+                        if (sub_wt != NULL && sub_wt[1] != 0) {
+                            clean_subtype = *(int *)(intptr_t)sub_wt[1];
+                        }
+                    }
+                }
+
+                if (has_work != 0 && next_move_type == 0 && (clean_subtype == 1 || clean_subtype == 2)) {
+                    log_persist("[PERSIST-MAP] Relocation failed with Auto clean queued (subtype=%d): running RAM fallback clean (flash map preserved).\n",
+                                clean_subtype);
                     g_fallback_clean_active = 1;
                     g_reloc_failure_trapped = 0;
                     __atomic_add_fetch(&g_allow_ram_reset, 1, __ATOMIC_SEQ_CST);
@@ -297,7 +437,8 @@ uint32_t onMainTaskFinished(int ctx, int *task, int *msg) {
                     return ret;
                 }
 
-                log_persist("[PERSIST-MAP] Lift/Running relocation failed: stopping cleanly & restoring map frame.\n");
+                log_persist("[PERSIST-MAP] Lift/Running relocation failed (has_work=%d next_type=%d subtype=%d): stopping cleanly & restoring map frame.\n",
+                            has_work, next_move_type, clean_subtype);
                 if (!real_MdsStopCurTask) real_MdsStopCurTask = resolve_lib_sym(&g_mmi_handle, MMI_PERIPH_PLUGIN, "MdsStopCurTask", RTLD_NEXT);
                 if (!real_MDSMotorControl) real_MDSMotorControl = resolve_lib_sym(&g_mmi_handle, MMI_PERIPH_PLUGIN, "MDSMotorControl", RTLD_NEXT);
                 if (!real_MDSReportTaskState) real_MDSReportTaskState = resolve_lib_sym(&g_mmi_handle, MMI_PERIPH_PLUGIN, "MDSReportTaskState", RTLD_NEXT);
@@ -317,16 +458,16 @@ uint32_t onMainTaskFinished(int ctx, int *task, int *msg) {
                 if (real_MDSReportTaskState) real_MDSReportTaskState(ctx);
                 return 0;
             }
+            if ((reloc_type == 1 || reloc_type == 2) && reloc_ok) {
+                uint32_t ret = real_onMainTaskFinished ? real_onMainTaskFinished(ctx, task, msg) : 1;
+                if (is_robot_on_charger(ctx)) {
+                    sync_dock_pose(ctx, (reloc_type == 1) ? "relocOnChgOk" : "RecoverOkOnCharger");
+                }
+                return ret;
+            }
         } else if (task_type == 3 && g_fallback_clean_active && has_valid_persistent_map()) {
             uint32_t ret = real_onMainTaskFinished ? real_onMainTaskFinished(ctx, task, msg) : 1;
-            if (!real_MDSElemCastMsg)
-                real_MDSElemCastMsg = dlsym(RTLD_NEXT, "MDSElemCastMsg");
-            int on_chg = 0;
-            if (real_MDSElemCastMsg) {
-                int ch_cmd[2] = {1, (int)(long)&on_chg};
-                real_MDSElemCastMsg(ctx, "CH_SIG", ch_cmd);
-            }
-            if (on_chg != 0) {
+            if (is_robot_on_charger(ctx)) {
                 g_fallback_clean_active = 0;
                 if (*(int *)(ctx + 400) != 2) {
                     log_persist("[PERSIST-MAP] Fallback clean docked: reloading persistent map from flash.\n");
@@ -338,6 +479,34 @@ uint32_t onMainTaskFinished(int ctx, int *task, int *msg) {
         }
     }
     return real_onMainTaskFinished ? real_onMainTaskFinished(ctx, task, msg) : 1;
+}
+
+uint32_t MdsStartReturnTask(int ctx, uint32_t flag, int *param_3) {
+    if (ctx) g_mmi_ctx = ctx;
+    if (!real_MdsStartReturnTask)
+        real_MdsStartReturnTask = resolve_lib_sym(&g_mmi_handle, MMI_PERIPH_PLUGIN, "MdsStartReturnTask", RTLD_NEXT);
+    if (ctx != 0) {
+        log_persist("[PERSIST-MAP] MdsStartReturnTask: map_mode=%d front=(%.1f,%.1f,%.3f) dock=(%.1f,%.1f,%.3f)\n",
+                    *(int *)(ctx + 400),
+                    *(float *)(ctx + 0x17c), *(float *)(ctx + 0x180), *(float *)(ctx + 0x184),
+                    *(float *)(ctx + 0x168), *(float *)(ctx + 0x16c), *(float *)(ctx + 0x170));
+    }
+    return real_MdsStartReturnTask ? real_MdsStartReturnTask(ctx, flag, param_3) : 0;
+}
+
+uint32_t onTaskInterrupted(int ctx, void *elem, void *msg) {
+    if (ctx) g_mmi_ctx = ctx;
+    if (!real_onTaskInterrupted)
+        real_onTaskInterrupted = resolve_lib_sym(&g_mmi_handle, MMI_PERIPH_PLUGIN, "onTaskInterrupted", RTLD_NEXT);
+    if (elem != NULL) {
+        int task_type = *(int *)((char *)elem + 0x2c);
+        if (task_type == 3) {
+            log_persist("[PERSIST-MAP] Return task interrupted (failed to find dock/beacon).\n");
+        } else {
+            log_persist("[PERSIST-MAP] Task interrupted (type=%d).\n", task_type);
+        }
+    }
+    return real_onTaskInterrupted ? real_onTaskInterrupted(ctx, elem, msg) : 0;
 }
 
 /*

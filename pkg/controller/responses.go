@@ -9,7 +9,7 @@ import (
 	"image/color"
 	"io"
 	"log"
-	"os"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,6 +70,7 @@ var RobotPoseValid bool = false
 var RobotAngle int = 0
 var ChargerPosX int = 0
 var ChargerPosY int = 0
+var ChargerPosValid bool = false
 var MapCropMinX int = 0
 var MapCropMinY int = 0
 var MapCropMaxX int = 0
@@ -120,6 +121,18 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 			log.Printf("[MAP] IfHaveMap response: %+v", valuesMap)
 		case "GetMapSt", "MapSt":
 			log.Printf("[MAP] MapSt response: %+v", valuesMap)
+			if stStr, ok := valuesMap["-st"].(string); ok {
+				switch stStr {
+				case "none":
+					clearCachedMapState()
+				case "built", "building", "RecoverOk":
+					if len(getScaledMapGrid()) == 0 {
+						publishXML(GetMapM)
+						publishXML(GetMapSet)
+						publishXML(GetMapVirtualWalls)
+					}
+				}
+			}
 		case "MapP":
 			log.Printf("[MAP] MapP received piece: %+v", valuesMap["-pid"])
 			var mapId int
@@ -268,12 +281,21 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 						rawX, _ := strconv.ParseFloat(parts[0], 64)
 						rawY, _ := strconv.ParseFloat(parts[1], 64)
 						center := 400
+						mapMutex.RLock()
 						if len(mapInfo.mapGrid) > 0 {
 							center = len(mapInfo.mapGrid) / 2
 						}
-						ChargerPosX = center + int(rawX/50.0)
-						ChargerPosY = center + int(rawY/50.0)
-						log.Printf("[POS] Pos packet had t=c, assigned to ChargerPos=(%d,%d)", ChargerPosX, ChargerPosY)
+						mapMutex.RUnlock()
+						gx := center + int(math.Round(rawX/50.0))
+						gy := center + int(math.Round(rawY/50.0))
+						statusMu.Lock()
+						ChargerPosX = gx
+						ChargerPosY = gy
+						if math.Abs(rawX) > 1.0 || math.Abs(rawY) > 1.0 {
+							ChargerPosValid = true
+						}
+						statusMu.Unlock()
+						log.Printf("[POS] Pos packet had t=c, assigned to ChargerPos=(%d,%d)", gx, gy)
 					}
 				}
 				break
@@ -285,7 +307,6 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 			} else if v, ok := valuesMap["-valid"].(float64); ok && v == 0 {
 				isValid = false
 			}
-			RobotPoseValid = isValid
 			if !isValid {
 				log.Printf("[POS] Notice: Robot reports unlocalized pose (valid=0), accepting reported coordinates (%v) as best-effort", valuesMap["-p"])
 			}
@@ -298,18 +319,23 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 					pStr = ps
 				}
 			}
+			center := 400
+			mapMutex.RLock()
+			if len(mapInfo.mapGrid) > 0 {
+				center = len(mapInfo.mapGrid) / 2
+			}
+			mapMutex.RUnlock()
+
+			statusMu.Lock()
+			RobotPoseValid = isValid
 			if pStr != "" {
 				pStr = strings.Trim(pStr, "[]")
 				parts := strings.Split(pStr, ",")
 				if len(parts) >= 2 {
 					rawX, _ := strconv.ParseFloat(parts[0], 64)
 					rawY, _ := strconv.ParseFloat(parts[1], 64)
-					center := 400
-					if len(mapInfo.mapGrid) > 0 {
-						center = len(mapInfo.mapGrid) / 2
-					}
-					RobotPosX = center + int(rawX/50.0)
-					RobotPosY = center + int(rawY/50.0)
+					RobotPosX = center + int(math.Round(rawX/50.0))
+					RobotPosY = center + int(math.Round(rawY/50.0))
 					log.Printf("[POS] Parsed RobotPos: raw=(%v,%v) -> grid=(%d,%d)", rawX, rawY, RobotPosX, RobotPosY)
 				}
 			}
@@ -322,6 +348,7 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 					RobotAngle, _ = strconv.Atoi(aStr)
 				}
 			}
+			statusMu.Unlock()
 		case "GetChargerPos", "ChargerPos":
 			pStr := ""
 			if p, ok := valuesMap["-p"].(string); ok {
@@ -338,22 +365,22 @@ func handleResponse(cmdName string, msgValues map[string]interface{}) error {
 					rawX, _ := strconv.ParseFloat(parts[0], 64)
 					rawY, _ := strconv.ParseFloat(parts[1], 64)
 					center := 400
+					mapMutex.RLock()
 					if len(mapInfo.mapGrid) > 0 {
 						center = len(mapInfo.mapGrid) / 2
 					}
-					ChargerPosX = center + int(rawX/50.0)
-					ChargerPosY = center + int(rawY/50.0)
-					if overrideX := os.Getenv("ROBOT_DOCK_X"); overrideX != "" {
-						if xVal, err := strconv.Atoi(overrideX); err == nil {
-							ChargerPosX = xVal
-						}
+					mapMutex.RUnlock()
+					gx := center + int(math.Round(rawX/50.0))
+					gy := center + int(math.Round(rawY/50.0))
+					valid := math.Abs(rawX) > 1.0 || math.Abs(rawY) > 1.0
+					statusMu.Lock()
+					ChargerPosX = gx
+					ChargerPosY = gy
+					if valid {
+						ChargerPosValid = true
 					}
-					if overrideY := os.Getenv("ROBOT_DOCK_Y"); overrideY != "" {
-						if yVal, err := strconv.Atoi(overrideY); err == nil {
-							ChargerPosY = yVal
-						}
-					}
-					log.Printf("[POS] Parsed ChargerPos: raw=(%v,%v) -> grid=(%d,%d)", rawX, rawY, ChargerPosX, ChargerPosY)
+					statusMu.Unlock()
+					log.Printf("[POS] Parsed ChargerPos: raw=(%v,%v) -> grid=(%d,%d)", rawX, rawY, gx, gy)
 				}
 			}
 		case "GetVolume":
@@ -502,6 +529,18 @@ var (
 	ActiveMsid             = "7"
 )
 
+func isSentinelVirtualRestriction(coords []int) bool {
+	if len(coords) == 0 {
+		return true
+	}
+	for _, c := range coords {
+		if c > -18000 && c < 18000 {
+			return false
+		}
+	}
+	return true
+}
+
 func handlePullMResponse(valuesMap map[string]interface{}) {
 	mStr, ok := valuesMap["-m"].(string)
 	if !ok || mStr == "" {
@@ -528,6 +567,19 @@ func handlePullMResponse(valuesMap map[string]interface{}) {
 			mid, _ = strconv.Atoi(idVal[2:])
 		} else if midStr, ok := valuesMap["-mid"].(string); ok {
 			mid, _ = strconv.Atoi(midStr)
+		}
+
+		if isSentinelVirtualRestriction(coords) {
+			restrictionsLock.Lock()
+			filtered := DiscoveredRestrictions[:0]
+			for _, r := range DiscoveredRestrictions {
+				if r.ID != mid {
+					filtered = append(filtered, r)
+				}
+			}
+			DiscoveredRestrictions = filtered
+			restrictionsLock.Unlock()
+			return
 		}
 
 		if len(coords) == 4 {
@@ -623,19 +675,6 @@ func handlePullMResponse(valuesMap map[string]interface{}) {
 	spotAreasLock.Unlock()
 
 	log.Printf("[MAP] Successfully parsed room %d (Room %c) with %d polygon points", mid, 'A'+mid, len(poly))
-
-	mapMutex.Lock()
-	for x := 0; x < len(mapInfo.mapGrid); x++ {
-		for y := 0; y < len(mapInfo.mapGrid[x]); y++ {
-			val := mapInfo.mapGrid[x][y]
-			if val == 1 || val == 3 {
-				if pointInPolygon(x, y, poly) {
-					mapInfo.mapGrid[x][y] = byte(4 + mid)
-				}
-			}
-		}
-	}
-	mapMutex.Unlock()
 }
 
 func getSpotAreas(valuesMap map[string]interface{}) {
@@ -864,11 +903,38 @@ func insertMapPieceIntoMapGrid(pieceId int, decodedMapPieceData []byte) {
 	}
 }
 
-func getImageFromMapGrid() image.Image {
+func clearCachedMapState() {
+	mapMutex.Lock()
+	mapInfo = MapInfo{}
+	MapCropMinX, MapCropMinY, MapCropMaxX, MapCropMaxY = 0, 0, 0, 0
+	mapMutex.Unlock()
+
+	spotAreasLock.Lock()
+	spotAreaPolygons = make(map[int][][2]int)
+	spotAreasLock.Unlock()
+
+	statusMu.Lock()
+	DiscoveredRooms = []string{}
+	statusMu.Unlock()
+
+	roomNamesLock.Lock()
+	DiscoveredRoomNames = make(map[string]string)
+	roomNamesLock.Unlock()
+
+	restrictionsLock.Lock()
+	DiscoveredRestrictions = []VirtualRestriction{}
+	restrictionsLock.Unlock()
+
+	pathLock.Lock()
+	resetTraceSessionLocked(0)
+	pathLock.Unlock()
+}
+
+func getImageOrPlaceholderFromMapGrid() (image.Image, bool) {
 	scaledImg := getScaledMapGrid()
 	scaledImgX := len(scaledImg)
 	if scaledImgX == 0 || len(scaledImg[0]) == 0 {
-		return image.NewRGBA(image.Rectangle{image.Point{0, 0}, image.Point{1, 1}})
+		return ecovacs.RenderNoMapImage(), false
 	}
 	scaledImgY := len(scaledImg[0])
 	imgRGBA := image.NewRGBA(image.Rectangle{image.Point{0, 0}, image.Point{scaledImgX, scaledImgY}})
@@ -879,7 +945,12 @@ func getImageFromMapGrid() image.Image {
 		}
 	}
 
-	return image.Image(imgRGBA)
+	return image.Image(imgRGBA), true
+}
+
+func getImageFromMapGrid() image.Image {
+	img, _ := getImageOrPlaceholderFromMapGrid()
+	return img
 }
 
 func getScaledMapGrid() [][]byte {
@@ -943,7 +1014,6 @@ func getScaledMapGrid() [][]byte {
 					for rId, poly := range spotAreaPolygons {
 						if pointInPolygon(wx, wy, poly) {
 							scaledMapGrid[i][j] = byte(4 + rId)
-							mapInfo.mapGrid[wx][wy] = byte(4 + rId)
 							break
 						}
 					}

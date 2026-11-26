@@ -60,7 +60,6 @@ python3 robot_patches/deploy_bot.py --build \
 ```
 Optional flags:
 - `--custom-sounds "98:My Sound,99:Another Sound"` — writes `/data/custom_sounds.json` for custom `/data/res/snd/*.ogg` voice prompts.
-- `--dock-x <X> --dock-y <Y>` — override dock pixel coordinates if needed.
 - `--verify-only` — inspect running processes, listening ports, disk usage, and MD5 without modifying files.
 
 **What this installs on the robot:**

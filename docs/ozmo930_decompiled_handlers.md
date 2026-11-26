@@ -854,7 +854,7 @@ All spatial maps and calibration data are stored on the persistent ext4 `/data` 
 In factory firmware, `rst_storeChargerStand` is only invoked during initial map generation:
 1. When the dock is physically moved to a different location in the home, the firmware retains the original coordinates in `/data/FILES/restoreChargerStand.bin`.
 2. When the robot is ordered to dock (`/charge`), `MdsStartReturnTask` navigates to the old coordinates. Unable to find the infrared dock beacon, it times out and enters relocation failure.
-3. **Resolution**: Direct binary calibration of `/data/FILES/restoreChargerStand.bin` and `/data/FILES/restorePose.bin` with the physical coordinates (or configuring dynamic overrides in the bridge via `ROBOT_DOCK_PIXEL_Y`) permanently updates dock localization without re-mapping the entire house.
+3. **Resolution**: Direct binary calibration of `/data/FILES/restoreChargerStand.bin` and `/data/FILES/restorePose.bin` with the physical coordinates permanently updates dock localization without re-mapping the entire house.
 
 ---
 

@@ -607,7 +607,7 @@ func handleIqStanza(bot *XmppBotSession, iq Stanza) {
 			cmdName = "MapM"
 		} else if strings.Contains(rawString, "tp='sa'") || strings.Contains(rawString, "tp=\"sa\"") || strings.Contains(rawString, "tp='vw'") || strings.Contains(rawString, "tp=\"vw\"") {
 			cmdName = "MapSet"
-		} else if strings.Contains(rawString, "st='built'") || strings.Contains(rawString, "st=\"built\"") || strings.Contains(rawString, "st='building'") {
+		} else if strings.Contains(rawString, "st='built'") || strings.Contains(rawString, "st=\"built\"") || strings.Contains(rawString, "st='building'") || strings.Contains(rawString, "st=\"building\"") || strings.Contains(rawString, "st='none'") || strings.Contains(rawString, "st=\"none\"") {
 			cmdName = "MapSt"
 		} else if strings.Contains(rawString, "t='p'") || strings.Contains(rawString, "t=\"p\"") {
 			cmdName = "Pos"

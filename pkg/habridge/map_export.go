@@ -3,7 +3,6 @@ package habridge
 import (
 	"bytes"
 	"compress/zlib"
-	_ "embed"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -18,9 +17,6 @@ import (
 
 	"github.com/kushagharahi/ecovacs-privacy-control/pkg/ecovacs"
 )
-
-//go:embed saved_map.jpg
-var FallbackMapJPEG []byte
 
 // ExportGridToValetudoMap transforms a stitched Ecovacs mapGrid into a ValetudoMap JSON v2 wire struct.
 func ExportGridToValetudoMap(grid [][]byte, robotSN string, chargerX, chargerY, robotX, robotY, robotAngle int, rooms []string, roomNames map[string]string, restrictions []ecovacs.VirtualRestriction, pathPoints []ecovacs.PathPoint, cropMinX, cropMinY int) *ValetudoMap {
@@ -259,16 +255,13 @@ func GridToImage(grid [][]byte, chargerX, chargerY, robotX, robotY, robotAngle i
 	return img
 }
 
-// DrawEntitiesOnImage renders entities onto any image (including fallback JPEG).
+// DrawEntitiesOnImage renders entities onto a copy of src.
 func DrawEntitiesOnImage(src image.Image, chargerX, chargerY, robotX, robotY, robotAngle int, restrictions []ecovacs.VirtualRestriction, pathPoints []ecovacs.PathPoint, cropMinX, cropMinY int) image.Image {
 	bounds := src.Bounds()
-	rgba, ok := src.(*image.RGBA)
-	if !ok {
-		rgba = image.NewRGBA(bounds)
-		for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-			for x := bounds.Min.X; x < bounds.Max.X; x++ {
-				rgba.Set(x, y, src.At(x, y))
-			}
+	rgba := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			rgba.Set(x, y, src.At(x, y))
 		}
 	}
 	DrawEntities(rgba, chargerX, chargerY, robotX, robotY, robotAngle, restrictions, pathPoints, cropMinX, cropMinY)
@@ -283,7 +276,7 @@ func DrawEntities(img *image.RGBA, chargerX, chargerY, robotX, robotY, robotAngl
 	if len(pathPoints) > 0 {
 		offsetWorldX := (400 - cropMinX) * 50
 		offsetWorldY := (400 - cropMinY) * 50
-		pathColor := color.RGBA{128, 216, 255, 200} // Sky blue
+		pathColor := color.RGBA{128, 216, 255, 255} // Sky blue (opaque; Go color.RGBA is alpha-premultiplied)
 		var prevX, prevY int
 		havePrev := false
 		for _, pt := range pathPoints {
@@ -379,7 +372,7 @@ func DrawEntities(img *image.RGBA, chargerX, chargerY, robotX, robotY, robotAngl
 					if dot > 2.8 {
 						img.Set(x, y, color.RGBA{0, 229, 255, 255}) // Vibrant cyan front bumper
 					} else {
-						img.Set(x, y, color.RGBA{33, 33, 33, 255})   // Dark bumper
+						img.Set(x, y, color.RGBA{33, 33, 33, 255}) // Dark bumper
 					}
 				} else if d2 > 4 {
 					// Robot clean white body
@@ -454,21 +447,14 @@ func absVal(v int) int {
 
 // ExportImageToValetudoMap transforms an image (e.g. from /getMapData endpoint) into a ValetudoMap v2 wire struct.
 func ExportImageToValetudoMap(img image.Image, robotSN string, chargerX, chargerY, robotX, robotY, robotAngle int) *ValetudoMap {
+	vMap := NewEmptyValetudoMap(robotSN)
+	if img == nil {
+		return vMap
+	}
 	bounds := img.Bounds()
 	width := bounds.Dx()
 	height := bounds.Dy()
-
-	if (width <= 1 || height <= 1) && len(FallbackMapJPEG) > 0 {
-		if fallbackImg, _, err := image.Decode(bytes.NewReader(FallbackMapJPEG)); err == nil {
-			img = fallbackImg
-			bounds = img.Bounds()
-			width = bounds.Dx()
-			height = bounds.Dy()
-		}
-	}
-
-	vMap := NewEmptyValetudoMap(robotSN)
-	if width <= 1 && height <= 1 {
+	if width <= 1 || height <= 1 {
 		return vMap
 	}
 
@@ -580,16 +566,8 @@ func ExportImageToValetudoMap(img image.Image, robotSN string, chargerX, charger
 // EncodePNGWithValetudoMap encodes an image as PNG and embeds the ValetudoMap JSON
 // as a compressed zTXt chunk with keyword "ValetudoMap", as expected by HA vacuum map cards.
 func EncodePNGWithValetudoMap(img image.Image, vMap *ValetudoMap) ([]byte, error) {
-	bounds := img.Bounds()
-	if (bounds.Dx() <= 1 || bounds.Dy() <= 1) && len(FallbackMapJPEG) > 0 {
-		if fallbackImg, _, err := image.Decode(bytes.NewReader(FallbackMapJPEG)); err == nil {
-			img = fallbackImg
-			bounds = img.Bounds()
-		}
-	}
-	if bounds.Dx() <= 1 && bounds.Dy() <= 1 {
-		// Minimum 10x10 transparent canvas
-		img = image.NewRGBA(image.Rect(0, 0, 10, 10))
+	if img == nil || img.Bounds().Dx() <= 1 || img.Bounds().Dy() <= 1 {
+		img = ecovacs.RenderNoMapImage()
 	}
 
 	var buf bytes.Buffer

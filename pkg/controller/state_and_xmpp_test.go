@@ -519,3 +519,118 @@ func TestGenerateSelfSignedTLSConfig(t *testing.T) {
 		t.Fatalf("expected cached server.key: %v", err)
 	}
 }
+
+func TestDockedChargerPosValidAndSentinelVirtualWallFilter(t *testing.T) {
+	statusMu.Lock()
+	origState := ChargingState
+	origRX, origRY, origRA, origRValid := RobotPosX, RobotPosY, RobotAngle, RobotPoseValid
+	origCX, origCY, origCValid := ChargerPosX, ChargerPosY, ChargerPosValid
+	ChargingState = "SlotCharging"
+	RobotPosX, RobotPosY, RobotAngle, RobotPoseValid = 367, 417, 85, true
+	ChargerPosX, ChargerPosY, ChargerPosValid = 0, 0, false
+	statusMu.Unlock()
+
+	mapMutex.Lock()
+	origInfo := mapInfo
+	grid := make([][]byte, 800)
+	for i := range grid {
+		grid[i] = make([]byte, 800)
+	}
+	grid[192][242] = 2
+	grid[447][572] = 2
+	grid[367][417] = 1
+	mapInfo = MapInfo{mapGrid: grid}
+	mapMutex.Unlock()
+
+	restrictionsLock.Lock()
+	origRestr := DiscoveredRestrictions
+	DiscoveredRestrictions = nil
+	restrictionsLock.Unlock()
+
+	defer func() {
+		statusMu.Lock()
+		ChargingState = origState
+		RobotPosX, RobotPosY, RobotAngle, RobotPoseValid = origRX, origRY, origRA, origRValid
+		ChargerPosX, ChargerPosY, ChargerPosValid = origCX, origCY, origCValid
+		statusMu.Unlock()
+
+		mapMutex.Lock()
+		mapInfo = origInfo
+		mapMutex.Unlock()
+
+		restrictionsLock.Lock()
+		DiscoveredRestrictions = origRestr
+		restrictionsLock.Unlock()
+	}()
+
+	// 1. Before ChargerPos arrives (ChargerPosValid == false), docked robot must NOT snap to 0 - minX
+	rec := httptest.NewRecorder()
+	handleMapGrid(rec, httptest.NewRequest("GET", "/mapGrid", nil))
+	var mg MapGridResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &mg); err != nil {
+		t.Fatalf("unmarshal mapGrid: %v", err)
+	}
+	if mg.ChargerPixelX != -1 || mg.ChargerPixelY != -1 {
+		t.Fatalf("expected unset charger (-1,-1) before ChargerPos, got (%d,%d)", mg.ChargerPixelX, mg.ChargerPixelY)
+	}
+	if mg.RobotPixelX != 367-192 || mg.RobotPixelY != 417-242 {
+		t.Fatalf("expected robot pixel (175,175), got (%d,%d)", mg.RobotPixelX, mg.RobotPixelY)
+	}
+
+	// 2. Once ChargerPos (-1631, 827) arrives, math.Round maps to (367, 417) -> cropped (175, 175)
+	_ = handleResponse("ChargerPos", map[string]interface{}{"-p": "-1631,827", "-a": "-85"})
+	rec2 := httptest.NewRecorder()
+	handleMapGrid(rec2, httptest.NewRequest("GET", "/mapGrid", nil))
+	if err := json.Unmarshal(rec2.Body.Bytes(), &mg); err != nil {
+		t.Fatalf("unmarshal mapGrid after ChargerPos: %v", err)
+	}
+	if mg.ChargerPixelX != 175 || mg.ChargerPixelY != 175 || mg.RobotPixelX != 175 || mg.RobotPixelY != 175 {
+		t.Fatalf("expected charger & robot at (175,175), got charger=(%d,%d) robot=(%d,%d)",
+			mg.ChargerPixelX, mg.ChargerPixelY, mg.RobotPixelX, mg.RobotPixelY)
+	}
+
+	// 3. Sentinel virtual wall [-19000,-19000,-18000,-19000] must be filtered out on PullM
+	handlePullMResponse(map[string]interface{}{
+		"-id": "vw0",
+		"-tp": "vw",
+		"-m":  "[-19000,-19000,-18000,-19000]",
+	})
+	restrictionsLock.Lock()
+	if len(DiscoveredRestrictions) != 0 {
+		restrictionsLock.Unlock()
+		t.Fatalf("expected sentinel virtual wall to be filtered, got %+v", DiscoveredRestrictions)
+	}
+	restrictionsLock.Unlock()
+}
+
+func TestMapStNoneClearsCachedMapAndServesNoMapPlaceholder(t *testing.T) {
+	mapMutex.Lock()
+	origInfo := mapInfo
+	mapInfo.mapGrid = [][]byte{{1, 2}, {2, 1}}
+	mapMutex.Unlock()
+	defer func() {
+		mapMutex.Lock()
+		mapInfo = origInfo
+		mapMutex.Unlock()
+	}()
+
+	noneIQ := Stanza{
+		XMLName: xml.Name{Local: "iq"},
+		Inner:   []byte(`<query xmlns='com:ctl'><ctl id='9999' ret='ok' st='none' info='noMap' method='auto'/></query>`),
+	}
+	handleIqStanza(&XmppBotSession{}, noneIQ)
+
+	grid, _, _, _, _ := GetMapGridRaw()
+	if len(grid) != 0 {
+		t.Fatalf("expected empty map grid after MapSt st='none', got len=%d", len(grid))
+	}
+
+	rec := httptest.NewRecorder()
+	getMapData(rec, httptest.NewRequest("GET", "/getMapData", nil))
+	if rec.Header().Get("X-Map-Empty") != "true" {
+		t.Fatalf("expected X-Map-Empty=true header when no map is loaded, got %q", rec.Header().Get("X-Map-Empty"))
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("expected non-empty JPEG placeholder body")
+	}
+}

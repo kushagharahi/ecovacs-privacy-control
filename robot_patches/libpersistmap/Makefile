@@ -1,6 +1,6 @@
 CC = arm-linux-gnueabihf-gcc
 CFLAGS = -fPIC -shared -O2 -Wall
-LDFLAGS = -ldl -lpthread
+LDFLAGS = -ldl -lpthread -lm
 
 TARGET = libpersistmap.so
 SRC = persist_map.c

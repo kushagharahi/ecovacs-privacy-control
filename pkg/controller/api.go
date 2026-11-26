@@ -81,7 +81,10 @@ func getMapData(res http.ResponseWriter, req *http.Request) {
 	publishXML(GetMapSt)
 	publishXML(SetMapAutoReport(true))
 
-	img := getImageFromMapGrid()
+	img, hasMap := getImageOrPlaceholderFromMapGrid()
+	if !hasMap {
+		res.Header().Set("X-Map-Empty", "true")
+	}
 	buffer := new(bytes.Buffer)
 	if err := jpeg.Encode(buffer, img, nil); err != nil {
 		log.Println("unable to encode image.")
@@ -103,32 +106,31 @@ func handleMapGrid(res http.ResponseWriter, req *http.Request) {
 	if len(grid) > 0 {
 		w = len(grid)
 		h = len(grid[0])
+	} else {
+		publishXML(GetMapM)
+		publishXML(GetMapSet)
+		publishXML(GetMapSt)
+		publishXML(SetMapAutoReport(true))
 	}
 
 	statusMu.RLock()
 	pixRobotX := RobotPosX - minX
 	pixRobotY := RobotPosY - minY
-	pixChargerX := ChargerPosX - minX
-	pixChargerY := ChargerPosY - minY
+	pixChargerX := -1
+	pixChargerY := -1
+	chargerValid := ChargerPosValid
+	if chargerValid {
+		pixChargerX = ChargerPosX - minX
+		pixChargerY = ChargerPosY - minY
+	}
 	chargingState := ChargingState
 	poseValid := RobotPoseValid
 	robotAngle := RobotAngle
 	roomsCopy := append([]string(nil), DiscoveredRooms...)
 	statusMu.RUnlock()
 
-	if pXStr := os.Getenv("ROBOT_DOCK_PIXEL_X"); pXStr != "" {
-		if px, err := strconv.Atoi(pXStr); err == nil {
-			pixChargerX = px
-		}
-	}
-	if pYStr := os.Getenv("ROBOT_DOCK_PIXEL_Y"); pYStr != "" {
-		if py, err := strconv.Atoi(pYStr); err == nil {
-			pixChargerY = py
-		}
-	}
-
 	isDocked := chargingState == "SlotCharging" || chargingState == "Charging"
-	if isDocked {
+	if isDocked && chargerValid && pixChargerX >= 0 && pixChargerY >= 0 {
 		pixRobotX = pixChargerX
 		pixRobotY = pixChargerY
 		poseValid = true
@@ -311,51 +313,37 @@ func getStatus(res http.ResponseWriter, req *http.Request) {
 	discoveredRooms := append([]string(nil), DiscoveredRooms...)
 	errs, robotAngle := Errors, RobotAngle
 	poseValid := RobotPoseValid
+	chargerValid := ChargerPosValid
 	robotPosX, robotPosY, chargerPosX, chargerPosY := RobotPosX, RobotPosY, ChargerPosX, ChargerPosY
 	cropMinX, cropMinY := MapCropMinX, MapCropMinY
 	statusMu.RUnlock()
 
 	pixelRobotX := 0
 	pixelRobotY := 0
-	pixelChargerX := 0
-	pixelChargerY := 0
+	pixelChargerX := -1
+	pixelChargerY := -1
 
 	if cropMinX > 0 || cropMinY > 0 {
 		if robotPosX >= 0 && robotPosY >= 0 {
 			pixelRobotX = robotPosX - cropMinX
 			pixelRobotY = robotPosY - cropMinY
 		}
-		if chargerPosX >= 0 && chargerPosY >= 0 {
+		if chargerValid && chargerPosX >= 0 && chargerPosY >= 0 {
 			pixelChargerX = chargerPosX - cropMinX
 			pixelChargerY = chargerPosY - cropMinY
 		}
 	} else {
 		pixelRobotX = robotPosX
 		pixelRobotY = robotPosY
-		pixelChargerX = chargerPosX
-		pixelChargerY = chargerPosY
-	}
-
-	if pXStr := os.Getenv("ROBOT_DOCK_PIXEL_X"); pXStr != "" {
-		if px, err := strconv.Atoi(pXStr); err == nil {
-			pixelChargerX = px
-			if cropMinX > 0 || cropMinY > 0 {
-				chargerPosX = cropMinX + px
-			}
-		}
-	}
-	if pYStr := os.Getenv("ROBOT_DOCK_PIXEL_Y"); pYStr != "" {
-		if py, err := strconv.Atoi(pYStr); err == nil {
-			pixelChargerY = py
-			if cropMinX > 0 || cropMinY > 0 {
-				chargerPosY = cropMinY + py
-			}
+		if chargerValid {
+			pixelChargerX = chargerPosX
+			pixelChargerY = chargerPosY
 		}
 	}
 
 	posX := robotPosX
 	posY := robotPosY
-	if chargingState == "SlotCharging" || chargingState == "Charging" {
+	if (chargingState == "SlotCharging" || chargingState == "Charging") && chargerValid && pixelChargerX >= 0 && pixelChargerY >= 0 {
 		pixelRobotX = pixelChargerX
 		pixelRobotY = pixelChargerY
 		posX = chargerPosX
