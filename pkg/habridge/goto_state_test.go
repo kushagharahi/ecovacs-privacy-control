@@ -1,4 +1,4 @@
-package main
+package habridge
 
 import (
 	"context"
@@ -7,8 +7,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/kushagharahi/ecovacs-privacy-control/pkg/habridge"
 )
 
 func TestCancelActiveGoToSingleCleanupAndNoOp(t *testing.T) {
@@ -22,7 +20,7 @@ func TestCancelActiveGoToSingleCleanupAndNoOp(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	b := habridge.NewBridge(habridge.Config{
+	b := NewBridge(Config{
 		ControllerURL: srv.URL,
 		RobotSN:       "SN_TEST",
 		MQTTBroker:    "tcp://127.0.0.1:1883",

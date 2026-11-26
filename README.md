@@ -38,7 +38,7 @@ Persistent root access on the OZMO 930 can be gained without disassembling the r
 ### 1. Provision WiFi
 1. Hold down the reset button under the robot's top cover until it chimes and announces it is in pairing mode.
 2. Connect your computer to the robot's AP network (`ECOVACS_xxxx`).
-3. Run the provisioning script with your WiFi credentials. For the on-robot deployment, set `--host-ip 127.0.0.1` (or your controller host IP if running externally):
+3. Run the provisioning script with your WiFi credentials and `--host-ip 127.0.0.1` so the robot connects to its own local on-bot controller:
    ```bash
    python3 ozmo-930-wifi.py --ssid "<YOUR_SSID>" --passphrase "<YOUR_WIFI_PASSWORD>" --host-ip 127.0.0.1
    ```
@@ -116,16 +116,6 @@ Home Assistant will automatically discover:
 - Switches for carpet boost, continuous clean, voice reports, and DND
 - Select entities for water flow rate and voice prompt soundboard
 - Volume number slider and consumable reset buttons
-
-### Alternative: Run Controller & Bridge on an External Host
-If you prefer running the controller and bridge off-robot:
-```bash
-# Terminal 1: Controller
-go run ./api_client -server-ip <HOST_IP> -robot-ip <ROBOT_IP>
-
-# Terminal 2: Home Assistant MQTT Bridge
-go run ./cmd/ha-bridge -mqtt-broker "tcp://<MQTT_BROKER_IP>:1883" -controller-url "http://localhost:8000" -robot-sn "<ROBOT_SN>"
-```
 
 ---
 
@@ -205,7 +195,7 @@ The controller exposes a local REST API on port `8000`:
 - [x] Gain persistent root access via USB OTG exploit (`root_payload`)
 - [x] Fix map-wiping on relocation failure & provide map recovery (`libpersistmap.so`)
 - [x] Drive robot around without suction motor (`libsilentgoto.so`)
-- [x] Home Assistant MQTT Auto-Discovery bridge (`cmd/ha-bridge`)
+- [x] Home Assistant MQTT Auto-Discovery bridge (`pkg/habridge`)
 - [x] Dynamic soundboard / custom audio playback support
 - [x] Consumable lifespan sensors & mopping water tank detection
 - [x] Run controller and HA MQTT bridge directly on the robot itself (zero external server)
@@ -232,7 +222,7 @@ The OZMO 930 runs an embedded Linux system on a Rockchip RK3188+ SoC (ARMv7 Cort
    - Commands (Clean, SpotArea, Charge, Stop, Sound, etc.) and telemetry (battery, charging state, brush lifespans, map updates) are exchanged via XML `<ctl td="..."/>` stanzas inside XMPP `<iq>` stanzas.
 
 ### Legacy Deebot 900 / 901 Series
-Older models connect to `mq-ww.ecouser.net:8883` over MQTT. Because they do not enforce certificate pinning, pointing DNS for `ecouser.net` to a local Mosquitto broker running with a self-signed CA allows MITM control. (Historical configs and cert templates remain in `openssl-config/` and `mosquitto.conf`).
+Older models connect to `mq-ww.ecouser.net:8883` over MQTTS. Because they do not enforce certificate pinning, pointing DNS for `ecouser.net` to a local Mosquitto broker running with a self-signed CA allows MITM control. Historical setup documentation and OpenSSL/Mosquitto templates are archived in [docs/legacy_deebot_900_mitm.md](docs/legacy_deebot_900_mitm.md) (and RV1107 firmware images remain in `900_binaries/`).
 
 ---
 

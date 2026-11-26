@@ -24,6 +24,7 @@ env/
 # Go compiled binaries
 /ha-bridge
 cmd/ha-bridge/ha-bridge*
+cmd/ecovacs-bot/ecovacs-bot*
 api_client/api_client
 api_client/ecovacs-controller*
 api_client/*-linux-*

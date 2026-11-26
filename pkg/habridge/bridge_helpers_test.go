@@ -1,24 +1,22 @@
-package main
+package habridge
 
 import (
 	"reflect"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/kushagharahi/ecovacs-privacy-control/pkg/habridge"
 )
 
 func TestUniqueStrings(t *testing.T) {
-	got := habridge.UniqueStrings([]string{"valetudo/SN1", "ha-bridge/SN1", "valetudo/SN1", "", "ha-bridge/ozmo_930", "ha-bridge/SN1"})
-	want := []string{"valetudo/SN1", "ha-bridge/SN1", "ha-bridge/ozmo_930"}
+	got := UniqueStrings([]string{"valetudo/SN1", "valetudo/ozmo_930", "valetudo/SN1", "", "valetudo/ozmo_930"})
+	want := []string{"valetudo/SN1", "valetudo/ozmo_930"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("UniqueStrings = %v, want %v", got, want)
 	}
 }
 
 func TestWorldCoordsToRobotMM(t *testing.T) {
-	b := habridge.NewBridge(habridge.Config{
+	b := NewBridge(Config{
 		RobotSN:    "SN_TEST",
 		MQTTBroker: "tcp://127.0.0.1:1883",
 	}, nil)
@@ -47,14 +45,14 @@ func TestDebounceWithin(t *testing.T) {
 	var mu sync.Mutex
 	var last time.Time
 
-	if !habridge.DebounceWithin(&mu, &last, 50*time.Millisecond) {
+	if !DebounceWithin(&mu, &last, 50*time.Millisecond) {
 		t.Fatal("first call should pass debounce")
 	}
-	if habridge.DebounceWithin(&mu, &last, 50*time.Millisecond) {
+	if DebounceWithin(&mu, &last, 50*time.Millisecond) {
 		t.Fatal("immediate second call should be debounced")
 	}
 	time.Sleep(60 * time.Millisecond)
-	if !habridge.DebounceWithin(&mu, &last, 50*time.Millisecond) {
+	if !DebounceWithin(&mu, &last, 50*time.Millisecond) {
 		t.Fatal("call after window should pass debounce")
 	}
 }
