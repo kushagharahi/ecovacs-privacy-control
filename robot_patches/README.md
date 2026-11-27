@@ -54,6 +54,17 @@ Instead, our patching architecture leverages dynamic `LD_PRELOAD` injection:
   - Runs single-pass soft-inflated 8-dir A* on the `400x400` (`100mm/cell`) grid with upfront obstacle-goal rejection, `MAX_ASTAR_POPS = 120000`, `coef <= 0.6f` tight-clearance scoping, colinear compression, and `MAX_RAW_ASTAR_NODES = 999` / `MAX_WAYPOINTS = 50` caps.
 - **Runtime Log**: `/tmp/direct_path.log`
 
+### D. `libwifiguard` (WiFi Power-Gate Protection & True Link LED Sync)
+- **Directory**: `robot_patches/libwifiguard/`
+- **Output Binary**: `libwifiguard.so`
+- **Problem Solved**:
+  - Low-battery MCU warning (`CH_SIG` `10` in `MdsTaskManagerProcess` `0x29d2c`) and power-switch toggles while sitting on live dock contacts (`KEY (0, 3)` in `MdsKeyMsgHandler` `0x2940c`) invoke `/etc/conf/medusa/disable_wifi.sh`, killing `wifi_service`/`wpa_supplicant`/`wifi_daemon`/`dhcpcd`, unloading `wlan.ko`, and pulling `gpio274` low with no re-enable path upon docking.
+  - `/etc/conf/medusa/xmpp_server_status.sh` drives the top WiFi LED solid whenever XMPP is connected—even when connected only to the loopback on-bot controller (`127.0.0.1:5223`) while `wlan0` is disconnected.
+- **Interception Mechanism**:
+  - Intercepts `system()` in `medusa` to block `disable_wifi.sh` and gate `xmpp_server_status.sh` solid LED status on actual `wlan0` station IPv4 (`SIOCGIFFLAGS` + `SIOCGIFADDR`, excluding `169.254.x.x` and AP `192.168.0.1`).
+  - Hooks `MDSElemCastMsg` (`xcRestart` from `nt0` and `LED(2,0,0)`) to sync the WiFi LED solid immediately on `wlan0` reconnect and prevent blanking while online, plus `onRobotEnterCharger` (`0x29264`) to self-heal `gpio274` and WiFi daemons if ever disabled externally.
+- **Runtime Log**: `/tmp/wifi_guard.log`
+
 ---
 
 ## 3. Compilation
