@@ -76,10 +76,20 @@ Instead, our patching architecture leverages dynamic `LD_PRELOAD` injection:
   - Factory Ozmo 930 relies almost exclusively on physical bumper impacts for unmapped dynamic obstacles (shoes, chair legs), commands instantaneous wheel speed jumps that cause wheel slip / odometry drift, spins endlessly in one direction on jammed bumpers, and lacks high-centering (zero-displacement) stall recovery when the bumper is not pressed.
 - **Interception Mechanism**:
   - **VFH+ 72-Sector Polar Histogram Steering (`adjustSpeed` hook)**: Reads live 360° Lidar points from `pRobotLdsPic` (`+0x2be8` count, `+0xa28` array) and, when `>= 3` confirming rays enter the forward danger corridor (`155–460mm` ahead, `|y| <= 205mm`), builds a robot-radius-inflated (`222mm`) 72-sector polar histogram to smoothly steer around obstacles before impact (automatically paused during dock IR alignment).
-  - **Zero-Displacement Pose-Stall & Wheel-Current Recovery**: Monitors `pAdapterDeebot_9` pose (`+0x2c08/+0x2c0c`), `_alert_isWheelLargeCurrent`, and `_alert_isSmallWheelStoped`; if commanded forward `> 2.5s` with `< 30mm` movement or sustained current/caster stall `> 1.2s`, injects a `320ms` alternating reverse-arc unhook pulse and reports the location to `libdirectpath`'s stuck heat-map.
+  - **Zero-Displacement Pose-Stall, Wheel-Current & Lidar Widest-Gap Escape**: Monitors `pAdapterDeebot_9` pose (`+0x2c08/+0x2c0c`), `_alert_isWheelLargeCurrent`, and `_alert_isSmallWheelStoped`; if commanded forward `> 2.5s` with `< 30mm` movement or sustained current/caster stall `> 1.2s`, scans `pRobotLdsPic` across all 72 sectors to find the widest open exit gap (`>= 520mm` clearance, `>= 20°` wide), reverses `240ms` to clear contact, pivots smoothly toward the widest exit gap, and reports the location to `libdirectpath`'s stuck heat-map.
   - **Smooth Acceleration Slew-Rate Limiter**: Caps forward/turn wheel speed jumps (`4.5` units / 20ms tick) while passing immediate stops `(0, 0)` and reverse commands straight through with zero lag.
   - **Bump-Cluster Heat-Map & Anti-Deadlock Pulse (`dwb_bumpUpdateInGridMapAndReduced`, `dtp_DeTrapInit`, `bumpStuckCheckAndHandle`)**: Feeds repeated bump clusters (`>= 3` bumps within `300mm` in `15s`) and detrap entries to `libdirectpath`, and pulses a `240ms` reverse nudge if a jammed bumper spins `> 1.6s`.
 - **Runtime Log**: `/tmp/nav_boost.log`
+
+### F. `libfastreloc` (Enhanced Branch-and-Bound Global Relocation)
+- **Directory**: `robot_patches/libfastreloc/`
+- **Output Binary**: `libfastreloc.so`
+- **Problem Solved**:
+  - In `plug_medusa_plugin_task_relocation.so`, the Ozmo 930 already uses Cartographer-style Branch-and-Bound (`BrunchAndBound` / `DoGlobalRelocationCarto`), but frequently rejects valid poses when doors open or furniture shifts because `ComputeCandidateMatchRate` only checks a 5-cell cross (missing diagonal cells on slight drift), lacks distance filtering for close/far noisy rays, and enforces rigid `0.80` (`CheckOriPose`) / `0.70` (`DoGlobalRelocationCarto`) cutoffs.
+- **Interception Mechanism**:
+  - Hooks `_Z25ComputeCandidateMatchRate6pose_tSt6vectorI9lds_dot_tSaIS1_EE14TRelocationMapP8TOutInfo` via `LD_PRELOAD` (exact ARMv7 `armhf` ABI layout).
+  - Runs stock scoring first; for near-miss candidates (`stock_rate` in `[0.45, 0.82)` with `>= 50` rays), re-evaluates with T8-inspired `DistanceFilter` (`250–4000mm`) and a full 3×3 neighborhood (including diagonals) to rescue genuine structural wall matches while never boosting low-confidence (`< 0.45`) wrong-room matches.
+- **Runtime Log**: `/tmp/fast_reloc.log`
 
 ---
 

@@ -79,14 +79,17 @@
 #define MAX_ACCEL_STEP      4.5f
 #define SPEED_STALE_MS      250
 
-/* Pose-stall & wheel-current stuck detection */
+/* Pose-stall & wheel-current stuck detection + T8-inspired Lidar gap escape */
 #define STALL_MIN_CMD_SPD   6.0f
 #define STALL_POSE_MS       2500
 #define STALL_MIN_MOVE_M    0.030f  /* 30mm in meters */
 #define STALL_MIN_MOVE_MM   30.0f   /* 30mm in millimeters (auto-detected scale) */
 #define STALL_CURR_MS       1200
-#define STALL_UNHOOK_MS     320
+#define STALL_BACK_MS       240     /* Phase 1: reverse off obstacle */
+#define STALL_AIM_MAX_MS    460     /* Phase 2: pivot toward widest Lidar exit gap */
 #define STALL_COOLDOWN_MS   6000
+#define GAP_OPEN_DIST_MM    520.0f  /* Minimum ray clearance for an open exit sector */
+#define GAP_MIN_SECTORS     4       /* Minimum 20-deg open gap width */
 
 /* Bump cluster & bump-stuck recovery */
 #define BUMP_CLUSTER_WIN_MS  15000
@@ -136,14 +139,16 @@ static float    g_last_l = 0.0f;
 static float    g_last_r = 0.0f;
 static uint64_t g_last_speed_ms = 0;
 
-/* Pose-stall & current-stall state */
-static float    g_stall_anchor_x = 0.0f;
-static float    g_stall_anchor_y = 0.0f;
+/* Pose-stall & current-stall + Lidar gap-escape state */
+static float    g_stall_anchor_x  = 0.0f;
+static float    g_stall_anchor_y  = 0.0f;
 static uint64_t g_stall_anchor_ms = 0;
 static uint64_t g_curr_stall_ms   = 0;
 static uint64_t g_unhook_start_ms = 0;
 static uint64_t g_unhook_last_ms  = 0;
 static int      g_unhook_dir      = 1;
+static int      g_unhook_aim_ms   = 0;
+static int      g_unhook_turn_dir = 1; /* +1 = left (+deg), -1 = right (-deg) */
 
 /* Bump cluster & last pose state */
 static int      g_last_gx = -1;
@@ -286,6 +291,74 @@ static inline int get_live_pose_and_grid(float *out_x, float *out_y, int *out_gx
     if (out_y) *out_y = y;
     if (out_gx) *out_gx = real_x2idx02 ? real_x2idx02(x) : (int)(x * 10.0f + 200.0f);
     if (out_gy) *out_gy = real_y2idx02 ? real_y2idx02(y) : (int)(y * 10.0f + 200.0f);
+    return 1;
+}
+
+/*
+ * T8-inspired Widest Lidar Exit Gap Finder (ported from librobot_stuck_handler.so
+ * IsFindGap / IsFindCorner):
+ * Scans all 72 5-deg sectors in pRobotLdsPic to find the widest contiguous open
+ * escape corridor (nearest ray > GAP_OPEN_DIST_MM) so the robot aims straight out
+ * of tight corners or chair-leg clusters instead of turning blindly.
+ * Returns 1 if a valid gap (>= GAP_MIN_SECTORS) was found, writing signed center
+ * angle (-180..+180 deg) and gap width (deg).
+ */
+static int find_widest_lidar_gap_deg(int *out_center_deg, int *out_width_deg) {
+    if (!pp_robot_lds_pic || !*pp_robot_lds_pic) return 0;
+    const uint8_t *lds = (const uint8_t *)(*pp_robot_lds_pic);
+    int n_pts = *(const int32_t *)(lds + OFF_LDS_COUNT);
+    if (n_pts < 20 || n_pts > VFH_MAX_PTS) return 0;
+
+    float min_dist[VFH_SECTORS];
+    for (int i = 0; i < VFH_SECTORS; i++) min_dist[i] = 4500.0f;
+
+    for (int i = 0; i < n_pts; i++) {
+        const uint8_t *pt = lds + OFF_LDS_BASE + i * OFF_LDS_STRIDE;
+        float dist = *(const float *)(pt + OFF_LDS_DIST);
+        if (!isfinite(dist) || dist < VFH_TRIGGER_MIN_MM || dist > 4500.0f) continue;
+
+        float ang_rad = *(const float *)(pt + OFF_LDS_ANGLE);
+        if (!isfinite(ang_rad)) continue;
+
+        float ang_deg = ang_rad * (180.0f / (float)M_PI);
+        while (ang_deg < 0.0f)    ang_deg += 360.0f;
+        while (ang_deg >= 360.0f) ang_deg -= 360.0f;
+
+        int sec = (int)(ang_deg / VFH_SECTOR_DEG + 0.5f) % VFH_SECTORS;
+        if (dist < min_dist[sec]) min_dist[sec] = dist;
+    }
+
+    /* Find widest contiguous open run with circular wrap-around (2 * VFH_SECTORS) */
+    int best_start = -1, best_len = 0;
+    int cur_start = -1, cur_len = 0;
+
+    for (int i = 0; i < VFH_SECTORS * 2; i++) {
+        int is_open = (min_dist[i % VFH_SECTORS] >= GAP_OPEN_DIST_MM);
+        if (is_open) {
+            if (cur_start < 0) {
+                cur_start = i;
+                cur_len = 1;
+            } else if (cur_len < VFH_SECTORS) {
+                cur_len++;
+            }
+            if (cur_len > best_len) {
+                best_len = cur_len;
+                best_start = cur_start;
+            }
+        } else {
+            cur_start = -1;
+            cur_len = 0;
+        }
+    }
+
+    if (best_len < GAP_MIN_SECTORS || best_start < 0) return 0;
+
+    int center_sec = (best_start + best_len / 2) % VFH_SECTORS;
+    int center_deg = center_sec * 5;
+    if (center_deg > 180) center_deg -= 360;
+
+    if (out_center_deg) *out_center_deg = center_deg;
+    if (out_width_deg)  *out_width_deg  = best_len * 5;
     return 1;
 }
 
@@ -450,11 +523,24 @@ void adjustSpeed(float left, float right) {
         int docking_active = (g_dock_active_until_ms > t);
         int bump_stuck_active = (g_stuck_start_ms != 0);
 
-        /* Active pose-stall unhook pulse takes priority while running */
+        /* Active pose-stall / gap-escape unhook pulse takes priority while running:
+         * Phase 1 (0 .. STALL_BACK_MS): gentle reverse to clear obstacle contact
+         * Phase 2 (STALL_BACK_MS .. +g_unhook_aim_ms): pivot toward widest Lidar exit gap */
         if (g_unhook_start_ms != 0) {
-            if ((t - g_unhook_start_ms) < STALL_UNHOOK_MS) {
-                out_l = (g_unhook_dir > 0) ? -13.0f : -9.0f;
-                out_r = (g_unhook_dir > 0) ? -9.0f  : -13.0f;
+            uint64_t elapsed = t - g_unhook_start_ms;
+            if (elapsed < STALL_BACK_MS) {
+                out_l = (g_unhook_dir > 0) ? -13.0f : -10.0f;
+                out_r = (g_unhook_dir > 0) ? -10.0f : -13.0f;
+                g_last_l = out_l;
+                g_last_r = out_r;
+                g_last_speed_ms = t;
+                pthread_mutex_unlock(&g_nav_mutex);
+                real_adjustSpeed(out_l, out_r);
+                return;
+            } else if (elapsed < (uint64_t)(STALL_BACK_MS + g_unhook_aim_ms)) {
+                /* Rotate toward widest Lidar gap (+1 = left -> L=-11, R=+11) */
+                out_l = (g_unhook_turn_dir > 0) ? -11.0f :  11.0f;
+                out_r = (g_unhook_turn_dir > 0) ?  11.0f : -11.0f;
                 g_last_l = out_l;
                 g_last_r = out_r;
                 g_last_speed_ms = t;
@@ -523,18 +609,34 @@ void adjustSpeed(float left, float right) {
 
             if (trigger_unhook &&
                 (g_unhook_last_ms == 0 || (t - g_unhook_last_ms) >= STALL_COOLDOWN_MS)) {
+                int gap_deg = 0, gap_w = 0;
+                int have_gap = find_widest_lidar_gap_deg(&gap_deg, &gap_w);
+                if (have_gap && abs(gap_deg) > 15) {
+                    g_unhook_turn_dir = (gap_deg >= 0) ? 1 : -1;
+                    int aim_ms = (abs(gap_deg) * STALL_AIM_MAX_MS) / 120;
+                    if (aim_ms < 120) aim_ms = 120;
+                    if (aim_ms > STALL_AIM_MAX_MS) aim_ms = STALL_AIM_MAX_MS;
+                    g_unhook_aim_ms = aim_ms;
+                } else {
+                    g_unhook_aim_ms = 0;
+                }
                 g_unhook_start_ms = t;
                 report_stall_gx = g_last_gx;
                 report_stall_gy = g_last_gy;
-                out_l = (g_unhook_dir > 0) ? -13.0f : -9.0f;
-                out_r = (g_unhook_dir > 0) ? -9.0f  : -13.0f;
+                out_l = (g_unhook_dir > 0) ? -13.0f : -10.0f;
+                out_r = (g_unhook_dir > 0) ? -10.0f : -13.0f;
                 g_last_l = out_l;
                 g_last_r = out_r;
                 g_last_speed_ms = t;
                 pthread_mutex_unlock(&g_nav_mutex);
 
-                log_msg("[NAV-BOOST] %s near grid (%d,%d) -> %dms reverse-arc unhook\n",
-                        reason, report_stall_gx, report_stall_gy, STALL_UNHOOK_MS);
+                if (have_gap) {
+                    log_msg("[NAV-BOOST] %s near (%d,%d) -> Gap-escape: widest exit %+d deg (width=%d deg), back %dms + aim %dms\n",
+                            reason, report_stall_gx, report_stall_gy, gap_deg, gap_w, STALL_BACK_MS, g_unhook_aim_ms);
+                } else {
+                    log_msg("[NAV-BOOST] %s near (%d,%d) -> %dms reverse unhook\n",
+                            reason, report_stall_gx, report_stall_gy, STALL_BACK_MS);
+                }
                 if (report_stall_gx >= 0 && report_stall_gy >= 0) {
                     report_heat(report_stall_gx, report_stall_gy, 4);
                 }
