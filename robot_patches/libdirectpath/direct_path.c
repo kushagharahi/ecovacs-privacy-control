@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <time.h>
 
 #define LOG_FILE "/tmp/direct_path.log"
 #define ERGODIC_PLUGIN "/usr/lib/medusa/plug_medusa_plugin_task_ergodic.so"
@@ -15,7 +16,7 @@
 #define GRID_H 400
 #define GRID_CELLS (GRID_W * GRID_H)
 
-/* Hard stack limits in stock setAstartWalkPoint02 (0x25b68.c) & FUN_000257e0 (0x257e0.c):
+/* Hard stack limits in stock setAstartWalkPoint02 & Douglas-Peucker simplifier:
  *   int aiStack_fcc[1000]   -> max 999 path cells
  *   float afStack_12ec[200] -> max 100 (x, y) floats / ast_astarPathNode (.bss 200B -> 50 ints)
  */
@@ -35,6 +36,12 @@
 #define COEF_LOW_PEN_1      20
 #define COEF_LOW_PEN_2      5
 #define COEF_LOW_PEN_3      0
+
+/* Spatial stuck heat-map (inspired by Ozmo 950 librobot_stuck_handler) */
+#define MAX_HEAT_ZONES      32
+#define HEAT_RADIUS_CELLS   2    /* 200mm radius around stuck/bump-trap spot */
+#define HEAT_DECAY_SEC      600  /* 10-minute linear decay */
+#define HEAT_PENALTY_UNIT   60   /* Extra A* step cost per heat level */
 
 typedef int (*astar_exe_G2G_NextRoom02_fn)(
     float dest_x, float dest_y,
@@ -83,9 +90,24 @@ static pthread_mutex_t g_init_mutex  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_astar_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int g_initialized = 0;
 
-/* TLS context propagated from ast_astarInt400WitCoef into findpathInt400 */
+/* TLS context propagated from ast_astarInt400WitCoef / G2G into findpathInt400 */
 static __thread int   g_witcoef_depth = 0;
 static __thread float g_witcoef_val   = 2.0f;
+static __thread int   g_g2g_depth     = 0;
+
+typedef struct {
+    int     gx;
+    int     gy;
+    uint8_t weight;
+    time_t  ts;
+} StuckHeatZone;
+
+static pthread_mutex_t g_heat_mutex = PTHREAD_MUTEX_INITIALIZER;
+static StuckHeatZone   g_heat_zones[MAX_HEAT_ZONES];
+static int             g_heat_count = 0;
+static StuckHeatZone   g_heat_snap[MAX_HEAT_ZONES];
+static int             g_heat_snap_count = 0;
+static time_t          g_heat_snap_now = 0;
 
 typedef struct {
     uint32_t f;
@@ -264,6 +286,191 @@ static uint8_t cell_clearance(const int32_t *map, int x, int y) {
     return clr;
 }
 
+/* Exported bridge called by libnavboost when repeated bump clusters or detraps occur */
+void nav_record_stuck_cell(int gx, int gy, uint8_t weight) {
+    if (gx < 0 || gx >= GRID_W || gy < 0 || gy >= GRID_H || weight == 0) return;
+
+    time_t now = time(NULL);
+    pthread_mutex_lock(&g_heat_mutex);
+
+    /* Merge into nearby active zone if within HEAT_RADIUS_CELLS */
+    for (int i = 0; i < g_heat_count; i++) {
+        if ((now - g_heat_zones[i].ts) >= HEAT_DECAY_SEC) continue;
+        int dx = g_heat_zones[i].gx - gx; if (dx < 0) dx = -dx;
+        int dy = g_heat_zones[i].gy - gy; if (dy < 0) dy = -dy;
+        if (dx <= HEAT_RADIUS_CELLS && dy <= HEAT_RADIUS_CELLS) {
+            unsigned int w = (unsigned int)g_heat_zones[i].weight + (unsigned int)weight;
+            g_heat_zones[i].weight = (w > 6) ? 6 : (uint8_t)w;
+            g_heat_zones[i].ts = now;
+            pthread_mutex_unlock(&g_heat_mutex);
+            log_msg("[DIRECT-PATH] Heat zone updated at (%d,%d) weight=%u\n",
+                    g_heat_zones[i].gx, g_heat_zones[i].gy, g_heat_zones[i].weight);
+            return;
+        }
+    }
+
+    /* Compact expired zones */
+    int write = 0;
+    for (int i = 0; i < g_heat_count; i++) {
+        if ((now - g_heat_zones[i].ts) < HEAT_DECAY_SEC) {
+            if (write != i) g_heat_zones[write] = g_heat_zones[i];
+            write++;
+        }
+    }
+    g_heat_count = write;
+
+    /* Evict oldest if full */
+    if (g_heat_count >= MAX_HEAT_ZONES) {
+        memmove(&g_heat_zones[0], &g_heat_zones[1], (MAX_HEAT_ZONES - 1) * sizeof(StuckHeatZone));
+        g_heat_count = MAX_HEAT_ZONES - 1;
+    }
+
+    g_heat_zones[g_heat_count].gx = gx;
+    g_heat_zones[g_heat_count].gy = gy;
+    g_heat_zones[g_heat_count].weight = (weight > 6) ? 6 : weight;
+    g_heat_zones[g_heat_count].ts = now;
+    g_heat_count++;
+
+    pthread_mutex_unlock(&g_heat_mutex);
+    log_msg("[DIRECT-PATH] Heat zone added at (%d,%d) weight=%u (active=%d)\n",
+            gx, gy, weight, g_heat_count);
+}
+
+static void snapshot_heat_zones(void) {
+    time_t now = time(NULL);
+    pthread_mutex_lock(&g_heat_mutex);
+    int n = 0;
+    for (int i = 0; i < g_heat_count; i++) {
+        if ((now - g_heat_zones[i].ts) < HEAT_DECAY_SEC) {
+            g_heat_snap[n++] = g_heat_zones[i];
+        }
+    }
+    g_heat_snap_count = n;
+    g_heat_snap_now = now;
+    pthread_mutex_unlock(&g_heat_mutex);
+}
+
+static inline uint32_t cell_stuck_heat(int x, int y) {
+    if (g_heat_snap_count == 0) return 0;
+    uint32_t total = 0;
+    for (int i = 0; i < g_heat_snap_count; i++) {
+        int dx = x - g_heat_snap[i].gx; if (dx < 0) dx = -dx;
+        if (dx > HEAT_RADIUS_CELLS) continue;
+        int dy = y - g_heat_snap[i].gy; if (dy < 0) dy = -dy;
+        if (dy > HEAT_RADIUS_CELLS) continue;
+        time_t age = g_heat_snap_now - g_heat_snap[i].ts;
+        if (age < 0) age = 0;
+        if (age >= HEAT_DECAY_SEC) continue;
+        uint32_t remain = (uint32_t)(HEAT_DECAY_SEC - age);
+        uint32_t eff = ((uint32_t)g_heat_snap[i].weight * remain + (HEAT_DECAY_SEC - 1)) / HEAT_DECAY_SEC;
+        if (eff == 0) eff = 1;
+        total += eff;
+    }
+    return total;
+}
+
+/* Spiral search for nearest free cell (preferring higher obstacle clearance) */
+static int snap_to_nearest_free(const int32_t *map, int *io_x, int *io_y, int max_r) {
+    int ox = *io_x, oy = *io_y;
+    if (cell_is_free(map, ox, oy)) return 1;
+
+    int best_x = -1, best_y = -1;
+    uint8_t best_clr = 0;
+    int best_d2 = 0x7fffffff;
+
+    for (int r = 1; r <= max_r; r++) {
+        for (int dx = -r; dx <= r; dx++) {
+            for (int dy = -r; dy <= r; dy++) {
+                if (dx != -r && dx != r && dy != -r && dy != r) continue;
+                int nx = ox + dx, ny = oy + dy;
+                if (!cell_is_free(map, nx, ny)) continue;
+                uint8_t clr = cell_clearance(map, nx, ny);
+                int d2 = dx * dx + dy * dy;
+                if (clr > best_clr || (clr == best_clr && d2 < best_d2)) {
+                    best_clr = clr;
+                    best_d2 = d2;
+                    best_x = nx;
+                    best_y = ny;
+                }
+            }
+        }
+        if (best_x != -1) {
+            *io_x = best_x;
+            *io_y = best_y;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Supercover Bresenham LOS check verifying obstacle clearance & low stuck-heat */
+static int line_has_clearance(const int32_t *map, int x0, int y0, int x1, int y1, uint8_t min_clr) {
+    int dx = x1 - x0;
+    int dy = y1 - y0;
+    int sx = (dx >= 0) ? 1 : -1;
+    int sy = (dy >= 0) ? 1 : -1;
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+
+    int x = x0, y = y0;
+    int err = dx - dy;
+
+    while (1) {
+        if (x != x0 || y != y0) {
+            if (x != x1 || y != y1) {
+                if (cell_clearance(map, x, y) < min_clr) return 0;
+                if (cell_stuck_heat(x, y) >= 2) return 0;
+            }
+        }
+        if (x == x1 && y == y1) break;
+
+        int e2 = err << 1;
+        int step_x = (e2 > -dy);
+        int step_y = (e2 < dx);
+        if (step_x && step_y) {
+            /* Supercover: check both orthogonal corner cells to prevent corner clipping */
+            if (cell_clearance(map, x + sx, y) < min_clr) return 0;
+            if (cell_clearance(map, x, y + sy) < min_clr) return 0;
+        }
+        if (step_x) { err -= dy; x += sx; }
+        if (step_y) { err += dx; y += sy; }
+    }
+    return 1;
+}
+
+/*
+ * Clearance-aware greedy Line-of-Sight (LOS) string-pulling (inspired by Ozmo 950
+ * librobot_jps_cxx smooth_path + Theta*): collapses choppy 45/90-deg grid staircases
+ * into clean any-angle straight lines while guaranteeing safe wall clearance.
+ */
+static int smooth_path_los(const int32_t *map, int32_t *path, int len, uint8_t min_clr) {
+    if (len <= 2) return len;
+
+    int write = 0;
+    int anchor = 0;
+    path[write++] = path[0];
+
+    while (anchor < len - 1) {
+        int ax = path[anchor] / GRID_H;
+        int ay = path[anchor] % GRID_H;
+        int next = anchor + 1;
+
+        for (int j = len - 1; j > anchor + 1; j--) {
+            int bx = path[j] / GRID_H;
+            int by = path[j] % GRID_H;
+            if (line_has_clearance(map, ax, ay, bx, by, min_clr)) {
+                next = j;
+                break;
+            }
+        }
+
+        path[write++] = path[next];
+        anchor = next;
+    }
+
+    return write;
+}
+
 static inline uint32_t octile_h(int x, int y, int gx, int gy) {
     int dx = gx - x; if (dx < 0) dx = -dx;
     int dy = gy - y; if (dy < 0) dy = -dy;
@@ -383,6 +590,11 @@ static int run_astar_pass(const int32_t *map, int sx, int sy, int gx, int gy,
             else if (clr == 2) step += p2;
             else if (clr == 3) step += p3;
 
+            uint32_t heat = cell_stuck_heat(nx, ny);
+            if (heat > 0) {
+                step += heat * HEAT_PENALTY_UNIT;
+            }
+
             uint32_t new_g = cur_g + step;
 
             if (g_ws.seen_gen[nidx] != gen) {
@@ -476,8 +688,10 @@ int findpathInt400(int width, int height,
         return 0;
     }
 
-    /* Upfront goal check avoids full-map flood on unreachable/obstacle goals during zig-zag planning */
-    if (!cell_is_free(map, gx, gy)) {
+    /* Upfront goal check avoids full-map flood on unreachable/obstacle goals during zig-zag planning.
+     * During cross-room G2G or witCoef (return-to-dock / reloc / bump recovery), allow small spiral snap. */
+    int allow_goal_snap = (g_witcoef_depth > 0 || g_g2g_depth > 0);
+    if (!allow_goal_snap && !cell_is_free(map, gx, gy)) {
         *out_count = 0;
         return 0;
     }
@@ -499,6 +713,24 @@ int findpathInt400(int width, int height,
         g_ws.cur_clr_gen = 1;
     }
 
+    snapshot_heat_zones();
+
+    /* Snap wedged start cell (or G2G/return goal cell) to nearest free cell */
+    if (!cell_is_free(map, sx, sy)) {
+        if (!snap_to_nearest_free(map, &sx, &sy, 3)) {
+            *out_count = 0;
+            pthread_mutex_unlock(&g_astar_mutex);
+            return 0;
+        }
+    }
+    if (allow_goal_snap && !cell_is_free(map, gx, gy)) {
+        if (!snap_to_nearest_free(map, &gx, &gy, 2)) {
+            *out_count = 0;
+            pthread_mutex_unlock(&g_astar_mutex);
+            return 0;
+        }
+    }
+
     uint32_t p1 = PENALTY_CLR_1, p2 = PENALTY_CLR_2, p3 = PENALTY_CLR_3;
     if (g_witcoef_depth > 0 && g_witcoef_val <= 0.6f) {
         p1 = COEF_LOW_PEN_1;
@@ -518,7 +750,13 @@ int findpathInt400(int width, int height,
         g_ws.tmp_path[len++] = cur;
     }
 
-    /* Compress colinear segments first if raw path exceeds stock aiStack_fcc[1000] limit */
+    /* Clearance-aware any-angle LOS string-pulling (eliminates 45/90-deg stair-stepping) */
+    if (len > 2) {
+        uint8_t min_clr = (p1 <= COEF_LOW_PEN_1) ? 1 : 2;
+        len = smooth_path_los(map, g_ws.tmp_path, len, min_clr);
+    }
+
+    /* Compress colinear segments if path still exceeds stock aiStack_fcc[1000] limit */
     if (len > MAX_RAW_ASTAR_NODES) {
         len = compress_colinear_path(g_ws.tmp_path, len);
     }
@@ -621,17 +859,19 @@ int astar_exe_G2G_NextRoom02(float dest_x, float dest_y,
             dest_x, dest_y);
 
     if (real_ast_astarInt400 && real_setAstartWalkPoint02 && costmap) {
+        g_g2g_depth++;
         int raw_nodes = real_ast_astarInt400(width, height,
                                              start_grid_x, start_grid_y,
                                              target_grid_x, target_grid_y,
                                              costmap);
+        g_g2g_depth--;
 
         if (raw_nodes > 0 && raw_nodes <= MAX_RAW_ASTAR_NODES + 1) {
             real_setAstartWalkPoint02(dest_x, dest_y);
 
             int wp_count = (p_ast_astarPathNodeCount) ? *p_ast_astarPathNodeCount : 1;
             if (wp_count >= 1 && wp_count <= MAX_WAYPOINTS) {
-                log_msg("[DIRECT-PATH] Direct 8-dir inflated A* OK: raw_nodes=%d, waypoints=%d\n",
+                log_msg("[DIRECT-PATH] Direct LOS-smoothed A* OK: raw_nodes=%d, waypoints=%d\n",
                         raw_nodes, wp_count);
                 return wp_count;
             }

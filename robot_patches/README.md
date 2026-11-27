@@ -43,15 +43,19 @@ Instead, our patching architecture leverages dynamic `LD_PRELOAD` injection:
   - Silences transit voice announcements (`0x0e, 0x13, 0x14, 0x15, 0x16, 0x18, 0x1b, 0x1d, 0x25, 0x26, 0x28, 0x2d` on `MdsPlayAudio` / `PLAYER cmd == 1`) without modifying stock audio files.
 - **Runtime Log**: `/tmp/silent_goto.log`
 
-### C. `libdirectpath` (Direct Global A* & Phantom Doorway Bypass)
+### C. `libdirectpath` (Direct Global A*, LOS Path Smoothing & Stuck Heat-Map)
 - **Directory**: `robot_patches/libdirectpath/`
 - **Output Binary**: `libdirectpath.so`
 - **Problem Solved**:
   - In factory firmware, `astar_exe_G2G_NextRoom02` (`0x251c0` in `plug_medusa_plugin_task_ergodic.so`) runs a hierarchical Gate-to-Gate (G2G) path planner that queries `rma_getDoorPathNodesByGraphSearch`.
   - In open-concept spaces (such as open kitchen/living room layouts), auto-segmentation creates partition boundaries where no physical walls exist. The G2G solver treats these boundaries as abstract rooms requiring transit through a synthetic "door gate" coordinate on the boundary line, forcing the robot to steer completely out of its way to pass through an imaginary doorway before continuing to the target.
+  - Raw grid-quantized A* paths also exhibit 45°/90° stair-stepping across open spaces and can fail when a start or transit goal lands 1–2 cells inside an inflated obstacle boundary.
 - **Interception Mechanism**:
   - Intercepts `findpathInt400` and `ast_astarInt400WitCoef` (alongside bounded `astar_exe_G2G_NextRoom02`) via `LD_PRELOAD`.
-  - Runs single-pass soft-inflated 8-dir A* on the `400x400` (`100mm/cell`) grid with upfront obstacle-goal rejection, `MAX_ASTAR_POPS = 120000`, `coef <= 0.6f` tight-clearance scoping, colinear compression, and `MAX_RAW_ASTAR_NODES = 999` / `MAX_WAYPOINTS = 50` caps.
+  - Runs single-pass soft-inflated 8-dir A* on the `400x400` (`100mm/cell`) grid with `MAX_ASTAR_POPS = 120000`, `coef <= 0.6f` tight-clearance scoping, and `MAX_RAW_ASTAR_NODES = 999` / `MAX_WAYPOINTS = 50` caps.
+  - Applies clearance-aware supercover Bresenham **Line-of-Sight (LOS) string-pulling** (`smooth_path_los`) to collapse 45°/90° staircases into straight any-angle paths while guaranteeing safe wall clearance (`>= 200mm` normal, `>= 100mm` tight transit).
+  - Performs spiral nearest-free snapping for wedged start cells and blocked `G2G`/`witCoef` goals (while keeping upfront fast-fail for unreachable zig-zag sweep probes).
+  - Exports `nav_record_stuck_cell()` to maintain a decaying 10-minute spatial stuck heat-map (`+heat * 60` A* step penalty) fed by `libnavboost`.
 - **Runtime Log**: `/tmp/direct_path.log`
 
 ### D. `libwifiguard` (WiFi Power-Gate Protection & True Link LED Sync)
@@ -64,6 +68,18 @@ Instead, our patching architecture leverages dynamic `LD_PRELOAD` injection:
   - Intercepts `system()` in `medusa` to block `disable_wifi.sh` and gate `xmpp_server_status.sh` solid LED status on actual `wlan0` station IPv4 (`SIOCGIFFLAGS` + `SIOCGIFADDR`, excluding `169.254.x.x` and AP `192.168.0.1`).
   - Hooks `MDSElemCastMsg` (`xcRestart` from `nt0` and `LED(2,0,0)`) to sync the WiFi LED solid immediately on `wlan0` reconnect and prevent blanking while online, plus `onRobotEnterCharger` (`0x29264`) to self-heal `gpio274` and WiFi daemons if ever disabled externally.
 - **Runtime Log**: `/tmp/wifi_guard.log`
+
+### E. `libnavboost` (VFH+ Lidar Obstacle Steering, Pose-Stall Recovery & Smooth Motion)
+- **Directory**: `robot_patches/libnavboost/`
+- **Output Binary**: `libnavboost.so`
+- **Problem Solved**:
+  - Factory Ozmo 930 relies almost exclusively on physical bumper impacts for unmapped dynamic obstacles (shoes, chair legs), commands instantaneous wheel speed jumps that cause wheel slip / odometry drift, spins endlessly in one direction on jammed bumpers, and lacks high-centering (zero-displacement) stall recovery when the bumper is not pressed.
+- **Interception Mechanism**:
+  - **VFH+ 72-Sector Polar Histogram Steering (`adjustSpeed` hook)**: Reads live 360° Lidar points from `pRobotLdsPic` (`+0x2be8` count, `+0xa28` array) and, when `>= 3` confirming rays enter the forward danger corridor (`155–460mm` ahead, `|y| <= 205mm`), builds a robot-radius-inflated (`222mm`) 72-sector polar histogram to smoothly steer around obstacles before impact (automatically paused during dock IR alignment).
+  - **Zero-Displacement Pose-Stall & Wheel-Current Recovery**: Monitors `pAdapterDeebot_9` pose (`+0x2c08/+0x2c0c`), `_alert_isWheelLargeCurrent`, and `_alert_isSmallWheelStoped`; if commanded forward `> 2.5s` with `< 30mm` movement or sustained current/caster stall `> 1.2s`, injects a `320ms` alternating reverse-arc unhook pulse and reports the location to `libdirectpath`'s stuck heat-map.
+  - **Smooth Acceleration Slew-Rate Limiter**: Caps forward/turn wheel speed jumps (`4.5` units / 20ms tick) while passing immediate stops `(0, 0)` and reverse commands straight through with zero lag.
+  - **Bump-Cluster Heat-Map & Anti-Deadlock Pulse (`dwb_bumpUpdateInGridMapAndReduced`, `dtp_DeTrapInit`, `bumpStuckCheckAndHandle`)**: Feeds repeated bump clusters (`>= 3` bumps within `300mm` in `15s`) and detrap entries to `libdirectpath`, and pulses a `240ms` reverse nudge if a jammed bumper spins `> 1.6s`.
+- **Runtime Log**: `/tmp/nav_boost.log`
 
 ---
 
