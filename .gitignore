@@ -51,7 +51,7 @@ squashfs-root/
 *.pid
 
 # Local test audio files (keep persistent assets in designated folders)
-/*.ogg
+**/*.ogg
 /*.wav
 /*.mp3
 

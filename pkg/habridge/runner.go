@@ -49,7 +49,7 @@ func (c *Config) ApplyDefaults() {
 		c.HAPrefix = GetEnv("HA_PREFIX", "homeassistant")
 	}
 	if c.MQTTTopic == "" {
-		c.MQTTTopic = GetEnv("MQTT_TOPIC", GetEnv("VALETUDO_TOPIC", "valetudo"))
+		c.MQTTTopic = GetEnv("MQTT_TOPIC", "ecovacs")
 	}
 	if c.PollInterval <= 0 {
 		c.PollInterval = 5 * time.Second
@@ -150,8 +150,7 @@ func Run(ctx context.Context, cfg Config) error {
 	topicPrefix := fmt.Sprintf("%s/%s", cfg.MQTTTopic, cfg.RobotSN)
 	subPrefixes := UniqueStrings([]string{
 		topicPrefix,
-		fmt.Sprintf("valetudo/%s", cfg.RobotSN),
-		"valetudo/ozmo_930",
+		fmt.Sprintf("%s/ozmo_930", cfg.MQTTTopic),
 	})
 
 	log.Println("=======================================================")

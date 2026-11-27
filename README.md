@@ -15,7 +15,7 @@ Goal: Control Ecovacs MQTT based vaccum robots directly with a self-hosted local
 > ```
 > I've personally tested most of everything in here with my 930 OZMO, but it's not well reviewed and very much vibe coded.
 
-Everything runs directly on the robot as a single self-contained ARMv7 Go binary (`cmd/ecovacs-bot`), combining the XMPP controller, REST API, Home Assistant MQTT Auto-Discovery bridge, and an embedded MQTT broker — **no external server or cloud connection required**. Home Assistant picks up the vacuum automatically via MQTT Discovery, and map control works with standard Home Assistant camera cards or [lovelace-xiaomi-vacuum-map-card](https://github.com/PiotrMachowski/lovelace-xiaomi-vacuum-map-card/) (see [docs/ha_bridge_integration.md](docs/ha_bridge_integration.md)).
+Everything runs directly on the robot as a single self-contained ARMv7 Go binary (`cmd/ecovacs-bot`), combining the XMPP controller, REST API, Home Assistant MQTT Auto-Discovery bridge, and an embedded MQTT broker — **no external server or cloud connection required**. Home Assistant picks up the vacuum automatically via MQTT Discovery, and map control works with standard Home Assistant camera cards or [lovelace-xiaomi-vacuum-map-card](https://github.com/kushagharahi/lovelace-xiaomi-vacuum-map-card) (see [docs/ha_bridge_integration.md](docs/ha_bridge_integration.md)).
 
 ## Root Access & Persistence (OZMO 930)
 
@@ -96,10 +96,10 @@ bridge_attempt_unsubscribe false
 restart_timeout 5
 
 topic homeassistant/# in 0
-topic valetudo/# both 0
+topic ecovacs/# both 0
 ```
 
-Because the robot's embedded broker suppresses self-echo, `topic valetudo/# both 0` works bidirectionally without echo loops and requires no per-entity topic configuration.
+Because the robot's embedded broker suppresses self-echo, `topic ecovacs/# both 0` works bidirectionally without echo loops and requires no per-entity topic configuration.
 
 #### Option B: Direct to the Robot (Vacuum is your only MQTT device)
 Point Home Assistant's MQTT integration directly to `<ROBOT_IP>` on port `1883` (anonymous, no password).
@@ -109,12 +109,131 @@ If your robot is allowed to reach your existing LAN Mosquitto broker directly, d
 
 Home Assistant will automatically discover:
 - `vacuum.ecovacs_deebot_ozmo_930_...` (State, Clean, Pause, Return to Base, Locate)
-- `camera.ecovacs_deebot_ozmo_930_ozmo_map` (Live rendered map with room polygons)
+- `camera.ecovacs_deebot_ozmo_930_ozmo_930_map_data` (Live rendered map with room polygons and active no-go zones)
 - Sensors for battery level, charging state, main brush, side brushes, dust filter, and clean stats
 - Binary sensor for mopping water tank attachment
 - Switches for carpet boost, continuous clean, voice reports, and DND
 - Select entities for water flow rate and voice prompt soundboard
 - Volume number slider and consumable reset buttons
+
+### 5. Interactive Map Card (Rooms, Zones, Spot, Go-To & No-Go Zones)
+
+Install [lovelace-xiaomi-vacuum-map-card](https://github.com/kushagharahi/lovelace-xiaomi-vacuum-map-card) via HACS (add as a custom Dashboard repository), then add a **Manual** card to your Home Assistant dashboard with the YAML below:
+
+1. Replace `<ROBOT_SN>` in both `internal_variables.topic` and the `Clear No-Go Zones` icon's `service_data.topic` with your robot's serial number (e.g., `ecovacs/<ROBOT_SN>`).
+2. Verify `entity` and `map_source.camera` match the auto-discovered entity IDs in your Home Assistant instance.
+3. *(Optional)* Customize or remove the `vacuum_clean_zone_predefined` example entry (`Bathroom`) with your own cropped-map pixel coordinates.
+4. Save the card and refresh your browser (`Cmd+Shift+R` / `F5`) — no Home Assistant restart is required.
+
+> [!NOTE]
+> - **Drawing No-Go Zones**: Select **No-Go Zones** from the mode selector, draw all exclusion rectangles you want (up to `max_selections: 10`), and press Play. Each submit replaces the robot's saved restriction list; active zones are rendered in **red** on the live map camera.
+> - **Clearing No-Go Zones**: Tap the **eraser** icon on the card's bottom action bar and confirm to clear all virtual walls and no-go areas.
+> - **1:1 Calibration & `* 50` Scaling**: The 1:1 `calibration_points` emit cropped-map pixel coordinates (50 mm/pixel). The `No-Go Zones` template multiplies coordinates by `50` to match the world-mm coordinate space expected by `CombinedVirtualRestrictionsCapability/set`.
+
+```yaml
+type: custom:xiaomi-vacuum-map-card
+title: Interactive Rooms & Zone Cleaning
+entity: vacuum.ecovacs_deebot_ozmo_930_ozmo_930
+vacuum_platform: Hypfer/Valetudo
+map_source:
+  camera: camera.ecovacs_deebot_ozmo_930_ozmo_930_map_data
+calibration_source:
+  calibration_points:
+    - vacuum:
+        x: 0
+        'y': 0
+      map:
+        x: 0
+        'y': 0
+    - vacuum:
+        x: 1000
+        'y': 0
+      map:
+        x: 1000
+        'y': 0
+    - vacuum:
+        x: 0
+        'y': 1000
+      map:
+        x: 0
+        'y': 1000
+internal_variables:
+  topic: ecovacs/<ROBOT_SN>
+map_locked: true
+two_finger_pan: false
+append_icons: true
+icons:
+  - icon: mdi:eraser
+    tooltip: Clear No-Go Zones
+    tap_action:
+      action: call-service
+      service: mqtt.publish
+      confirmation:
+        text: Clear all no-go zones?
+      service_data:
+        topic: ecovacs/<ROBOT_SN>/CombinedVirtualRestrictionsCapability/set
+        payload: '{"virtual_walls": [], "no_go_areas": []}'
+map_modes:
+  - template: vacuum_clean_segment
+  - template: vacuum_clean_zone_predefined
+    predefined_selections:
+      # Example predefined zone (replace with pixel coords from your own map)
+      - zones:
+          - - 23
+            - 128
+            - 59
+            - 166
+        label:
+          text: Bathroom
+          x: 41
+          'y': 147
+          offset_y: 35
+        icon:
+          name: mdi:shower
+          x: 41
+          'y': 147
+  - template: vacuum_clean_zone
+  - name: Pin & Clean (Spot)
+    icon: mdi:target
+    selection_type: MANUAL_POINT
+    coordinates_rounding: true
+    coordinates_to_meters_divider: 100
+    repeats_type: NONE
+    service_call_schema:
+      service: mqtt.publish
+      service_data:
+        topic: '[[topic]]/SpotCleaningCapability/clean/set'
+        payload: '{"coordinates": {"x": [[point_x]], "y": [[point_y]]}}'
+  - template: vacuum_goto
+  - name: No-Go Zones
+    icon: mdi:cancel
+    selection_type: MANUAL_RECTANGLE
+    max_selections: 10
+    coordinates_rounding: true
+    coordinates_to_meters_divider: 100
+    repeats_type: NONE
+    service_call_schema:
+      service: mqtt.publish
+      evaluate_data_as_template: true
+      service_data:
+        topic: '[[topic]]/CombinedVirtualRestrictionsCapability/set'
+        payload: |-
+          {
+            "virtual_walls": [],
+            "no_go_areas": [
+              {% for s in ('[[selection]]') | from_json %}
+              {
+                "points": {
+                  "pA": {"x": {{ s[0] * 50 }}, "y": {{ s[1] * 50 }}},
+                  "pB": {"x": {{ s[2] * 50 }}, "y": {{ s[1] * 50 }}},
+                  "pC": {"x": {{ s[2] * 50 }}, "y": {{ s[3] * 50 }}},
+                  "pD": {"x": {{ s[0] * 50 }}, "y": {{ s[3] * 50 }}}
+                }
+              }{% if not loop.last %},{% endif %}
+              {% endfor %}
+            ]
+          }
+```
 
 ---
 

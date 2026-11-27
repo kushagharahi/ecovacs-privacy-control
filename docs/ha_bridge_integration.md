@@ -2,7 +2,7 @@
 
 The **Home Assistant MQTT Bridge (`ha-bridge`)** runs alongside the Ecovacs privacy controller.
 
-It communicates with your local Mosquitto MQTT broker (`<HOST_IP>:1883`) and publishes Home Assistant MQTT Auto-Discovery definitions, creating a single device with integrated entities while maintaining Valetudo-compatible map and capability MQTT payloads for Lovelace vacuum map cards.
+It communicates with your local Mosquitto MQTT broker (`<HOST_IP>:1883`) and publishes Home Assistant MQTT Auto-Discovery definitions, creating a single device with integrated entities along with live map PNG and capability MQTT payloads for Lovelace vacuum map cards.
 
 ---
 
@@ -15,7 +15,7 @@ It communicates with your local Mosquitto MQTT broker (`<HOST_IP>:1883`) and pub
 | Entity ID | Type | Purpose / Capabilities |
 |---|---|---|
 | `vacuum.ozmo_930` | Vacuum | Start, Pause, Stop, Return to Base, Locate, state (`docked`, `cleaning`, `returning`, `paused`, `idle`). |
-| `camera.ozmo_930_map_data` | Camera | Live map PNG feed with embedded `ValetudoMap` zTXt chunk and room polygon/bounding-box attributes. |
+| `camera.ozmo_930_map_data` | Camera | Live map PNG feed with embedded map metadata zTXt chunk and room polygon/bounding-box attributes. |
 | `sensor.ozmo_930_battery` | Sensor | Battery state of charge (0–100%). |
 | `sensor.ozmo_930_brush_lifespan` | Sensor | Main roller brush remaining lifespan percentage. |
 | `sensor.ozmo_930_side_brush_lifespan` | Sensor | Dual side brushes remaining lifespan percentage. |
@@ -27,19 +27,19 @@ It communicates with your local Mosquitto MQTT broker (`<HOST_IP>:1883`) and pub
 
 ---
 
-## 2. MQTT Topics & Valetudo-Compatible Map Capabilities
+## 2. MQTT Topics & Map Capabilities
 
-For compatibility with custom vacuum map cards such as `custom:xiaomi-vacuum-map-card` and `custom:valetudo-map-card`, `ha-bridge` publishes state and map data using the `ValetudoMap` v2 schema under the configured primary topic (`MQTT_TOPIC`, defaulting to `valetudo/<DEVICE_ID>/`) and subscribes to control commands under `valetudo/<DEVICE_ID>/` (plus `valetudo/ozmo_930/`):
+For compatibility with `custom:xiaomi-vacuum-map-card`, `ha-bridge` publishes state and map data under the configured primary topic (`MQTT_TOPIC`, defaulting to `ecovacs/<DEVICE_ID>/`) and subscribes to control commands under `ecovacs/<DEVICE_ID>/` (plus `ecovacs/ozmo_930/`):
 
-- **ValetudoMap JSON v2:** `<MQTT_TOPIC>/<DEVICE_ID>/MapData/map_data`
-- **PNG Map (with `ValetudoMap` zTXt chunk):** `<MQTT_TOPIC>/<DEVICE_ID>/map_data`
+- **Map JSON v2:** `<MQTT_TOPIC>/<DEVICE_ID>/MapData/map_data`
+- **PNG Map (with embedded metadata zTXt chunk):** `<MQTT_TOPIC>/<DEVICE_ID>/map_data`
 - **Raw Map Image:** `<MQTT_TOPIC>/<DEVICE_ID>/map_image`
 - **State & Battery Object:** `<MQTT_TOPIC>/<DEVICE_ID>/state`
 - **Command Topic:** `<MQTT_TOPIC>/<DEVICE_ID>/command`
 - **Water Flow:** `<MQTT_TOPIC>/<DEVICE_ID>/water_flow` (`set_water_flow`)
 - **Speaker Volume:** `<MQTT_TOPIC>/<DEVICE_ID>/volume` (`set_volume`)
 - **Play Sound:** `<MQTT_TOPIC>/<DEVICE_ID>/play_sound`
-- **Map Capabilities (under `valetudo/<DEVICE_ID>/...`):**
+- **Map Capabilities (under `ecovacs/<DEVICE_ID>/...`):**
   - `MapSegmentationCapability/clean/set`
   - `ZoneCleaningCapability/start/set`
   - `GoToLocationCapability/target/set` and `GoToLocationCapability/go/set`
@@ -80,18 +80,9 @@ cards:
       - entity: sensor.ozmo_930_filter_lifespan
 ```
 
-### Option B: Custom Map Card (`custom:valetudo-map-card`)
+### Option B: Interactive Map Card (`custom:xiaomi-vacuum-map-card`)
 
-```yaml
-type: custom:valetudo-map-card
-vacuum: vacuum.ozmo_930
-valetudo_prefix: valetudo
-valetudo_identifier: <DEVICE_ID>
-title: "Living Room OZMO 930"
-show_dock: true
-show_path: true
-show_camera: true
-```
+See the full ready-to-paste `custom:xiaomi-vacuum-map-card` YAML (rooms, predefined zones, manual zones, spot clean, pin & go, no-go zones, and clear button) in `README.md`.
 
 ---
 
@@ -126,15 +117,14 @@ graph LR
 
 ### Dashboard Cards (`lovelace.vacuum`)
 The vacuum dashboard is hosted at `/vacuum` (`lovelace.vacuum` storage key) and contains:
-1. **`custom:valetudo-map-card`**: Real-time floor plan displaying robot pose, charger location, paths, virtual walls, and no-go areas via the `ValetudoMap` wire schema.
-2. **`custom:xiaomi-vacuum-map-card`**: Interactive room selection (`vacuum_clean_segment`), rectangular zone drawing (`vacuum_clean_zone`), and pin navigation (`vacuum_goto`). Calibrated with 1:1 identity coordinates.
-3. **`tile` (Deebot OZMO 930)**: Replaced invalid card type `vacuum`. Configured with `vacuum-commands` (`start_pause`, `stop`, `return_home`).
-4. **`entities` (Mopping & Vacuum Controls)**:
+1. **`custom:xiaomi-vacuum-map-card`**: Interactive room selection (`vacuum_clean_segment`), rectangular zone drawing (`vacuum_clean_zone`), spot clean, pin navigation (`vacuum_goto`), no-go exclusion zones, and clear button. Calibrated with 1:1 identity coordinates.
+2. **`tile` (Deebot OZMO 930)**: Replaced invalid card type `vacuum`. Configured with `vacuum-commands` (`start_pause`, `stop`, `return_home`).
+3. **`entities` (Mopping & Vacuum Controls)**:
    - `binary_sensor.ozmo_930_water_box` (Water Box Attachment)
    - `select.ozmo_930_water_flow` (Water Flow Rate: Low, Medium, High, Max)
    - `number.ozmo_930_volume` (Volume 0–100%)
    - `select.ozmo_930_soundboard` (Voice Prompt Soundboard)
-5. **`entities` (Sensors & Maintenance Lifespans)**:
+4. **`entities` (Sensors & Maintenance Lifespans)**:
    - Battery level & component wear lifespans (main brush, side brushes, dust filter).
 
 ### Resolved Protocol & Dashboard Issues

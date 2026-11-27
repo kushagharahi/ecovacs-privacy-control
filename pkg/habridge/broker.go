@@ -12,7 +12,7 @@ import (
 // StartEmbeddedBroker starts an in-process MQTT v3.1.1 TCP broker on listenAddr
 // with 2 MiB power-of-2 client ring buffers to accommodate large map payloads
 // and no-self-echo delivery so upstream Mosquitto bridges can safely use
-// bidirectional wildcards (e.g. `topic valetudo/# both 0`) without loops.
+// bidirectional wildcards (e.g. `topic ecovacs/# both 0`) without loops.
 func StartEmbeddedBroker(listenAddr string) (*mqtt.Server, error) {
 	if listenAddr == "" {
 		listenAddr = ":1883"

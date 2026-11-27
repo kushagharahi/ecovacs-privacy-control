@@ -1,7 +1,7 @@
 package habridge
 
 // ValetudoMap represents the Valetudo Map JSON Schema (Version 2) wire format
-// consumed by Home Assistant custom:valetudo-map-card and lovelace-xiaomi-vacuum-map-card.
+// embedded in PNG zTXt chunks for lovelace-xiaomi-vacuum-map-card.
 type ValetudoMap struct {
 	Class     string      `json:"__class"`
 	MetaData  MapMetaData `json:"metaData"`

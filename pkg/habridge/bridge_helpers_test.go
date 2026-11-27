@@ -8,8 +8,8 @@ import (
 )
 
 func TestUniqueStrings(t *testing.T) {
-	got := UniqueStrings([]string{"valetudo/SN1", "valetudo/ozmo_930", "valetudo/SN1", "", "valetudo/ozmo_930"})
-	want := []string{"valetudo/SN1", "valetudo/ozmo_930"}
+	got := UniqueStrings([]string{"ecovacs/SN1", "ecovacs/ozmo_930", "ecovacs/SN1", "", "ecovacs/ozmo_930"})
+	want := []string{"ecovacs/SN1", "ecovacs/ozmo_930"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("UniqueStrings = %v, want %v", got, want)
 	}

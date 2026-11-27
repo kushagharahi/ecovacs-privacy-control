@@ -116,7 +116,7 @@ func main() {
 	flag.StringVar(&bridgeCfg.ControllerURL, "controller-url", habridge.GetEnv("CONTROLLER_URL", "http://127.0.0.1:8000"), "Ecovacs controller URL")
 	flag.StringVar(&bridgeCfg.RobotSN, "robot-sn", habridge.GetEnv("ROBOT_SN", ""), "Robot Serial Number (auto-detected from XMPP if empty)")
 	flag.StringVar(&bridgeCfg.HAPrefix, "ha-prefix", habridge.GetEnv("HA_PREFIX", "homeassistant"), "Home Assistant MQTT Discovery prefix")
-	flag.StringVar(&bridgeCfg.MQTTTopic, "mqtt-topic", habridge.GetEnv("MQTT_TOPIC", "valetudo"), "Primary MQTT root topic")
+	flag.StringVar(&bridgeCfg.MQTTTopic, "mqtt-topic", habridge.GetEnv("MQTT_TOPIC", "ecovacs"), "Primary MQTT root topic")
 	flag.DurationVar(&bridgeCfg.PollInterval, "poll-interval", 5*time.Second, "Telemetry polling interval")
 	flag.DurationVar(&bridgeCfg.MapInterval, "map-interval", 3*time.Second, "Map polling interval")
 

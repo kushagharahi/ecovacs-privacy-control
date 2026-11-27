@@ -38,7 +38,7 @@ func TestEmbeddedBrokerRetainAndLargePayload(t *testing.T) {
 
 	// Publish a >300KB retained payload (exceeding default 256KB ring buffer)
 	largePayload := bytes.Repeat([]byte("A"), 320*1024)
-	if tok := pubCli.Publish("valetudo/SN_TEST/MapData/map_data", 0, true, largePayload); tok.Wait() && tok.Error() != nil {
+	if tok := pubCli.Publish("ecovacs/SN_TEST/MapData/map_data", 0, true, largePayload); tok.Wait() && tok.Error() != nil {
 		t.Fatalf("publish large payload: %v", tok.Error())
 	}
 
@@ -53,7 +53,7 @@ func TestEmbeddedBrokerRetainAndLargePayload(t *testing.T) {
 	}
 	defer subCli.Disconnect(100)
 
-	if tok := subCli.Subscribe("valetudo/+/MapData/map_data", 0, func(_ paho.Client, m paho.Message) {
+	if tok := subCli.Subscribe("ecovacs/+/MapData/map_data", 0, func(_ paho.Client, m paho.Message) {
 		got <- append([]byte(nil), m.Payload()...)
 	}); tok.Wait() && tok.Error() != nil {
 		t.Fatalf("subscribe: %v", tok.Error())
@@ -102,24 +102,24 @@ func TestEmbeddedBrokerNoSelfEchoAndRetain(t *testing.T) {
 	bridgeGot := make(chan string, 4)
 	robotGot := make(chan string, 4)
 
-	if tok := bridgeCli.Subscribe("valetudo/#", 0, func(_ paho.Client, m paho.Message) {
+	if tok := bridgeCli.Subscribe("ecovacs/#", 0, func(_ paho.Client, m paho.Message) {
 		bridgeGot <- m.Topic() + "=" + string(m.Payload())
 	}); tok.Wait() && tok.Error() != nil {
 		t.Fatalf("bridge subscribe: %v", tok.Error())
 	}
-	if tok := robotCli.Subscribe("valetudo/#", 0, func(_ paho.Client, m paho.Message) {
+	if tok := robotCli.Subscribe("ecovacs/#", 0, func(_ paho.Client, m paho.Message) {
 		robotGot <- m.Topic() + "=" + string(m.Payload())
 	}); tok.Wait() && tok.Error() != nil {
 		t.Fatalf("robot subscribe: %v", tok.Error())
 	}
 
 	// 1. Bridge publishes a command: robot must receive it, bridge must NOT get echoed back.
-	if tok := bridgeCli.Publish("valetudo/SN_TEST/set_carpet_boost", 0, false, "ON"); tok.Wait() && tok.Error() != nil {
+	if tok := bridgeCli.Publish("ecovacs/SN_TEST/set_carpet_boost", 0, false, "ON"); tok.Wait() && tok.Error() != nil {
 		t.Fatalf("bridge publish: %v", tok.Error())
 	}
 	select {
 	case msg := <-robotGot:
-		if msg != "valetudo/SN_TEST/set_carpet_boost=ON" {
+		if msg != "ecovacs/SN_TEST/set_carpet_boost=ON" {
 			t.Fatalf("robot got unexpected msg %q", msg)
 		}
 	case <-time.After(2 * time.Second):
@@ -133,12 +133,12 @@ func TestEmbeddedBrokerNoSelfEchoAndRetain(t *testing.T) {
 
 	// 2. Robot publishes a retained state: bridge receives it, robot does NOT get echoed,
 	// and a late-joining client still receives the retained payload.
-	if tok := robotCli.Publish("valetudo/SN_TEST/carpet_boost", 0, true, "ON"); tok.Wait() && tok.Error() != nil {
+	if tok := robotCli.Publish("ecovacs/SN_TEST/carpet_boost", 0, true, "ON"); tok.Wait() && tok.Error() != nil {
 		t.Fatalf("robot publish: %v", tok.Error())
 	}
 	select {
 	case msg := <-bridgeGot:
-		if msg != "valetudo/SN_TEST/carpet_boost=ON" {
+		if msg != "ecovacs/SN_TEST/carpet_boost=ON" {
 			t.Fatalf("bridge got unexpected msg %q", msg)
 		}
 	case <-time.After(2 * time.Second):
@@ -153,7 +153,7 @@ func TestEmbeddedBrokerNoSelfEchoAndRetain(t *testing.T) {
 	lateCli := connect("late-subscriber")
 	defer lateCli.Disconnect(100)
 	lateGot := make(chan string, 1)
-	if tok := lateCli.Subscribe("valetudo/SN_TEST/carpet_boost", 0, func(_ paho.Client, m paho.Message) {
+	if tok := lateCli.Subscribe("ecovacs/SN_TEST/carpet_boost", 0, func(_ paho.Client, m paho.Message) {
 		lateGot <- string(m.Payload())
 	}); tok.Wait() && tok.Error() != nil {
 		t.Fatalf("late subscribe: %v", tok.Error())
