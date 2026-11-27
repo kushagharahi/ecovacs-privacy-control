@@ -31,11 +31,10 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 		SwVersion:    "1.9.9",
 	}
 
-	// 1. Vacuum Entity (creates vacuum.ozmo_930)
+	// 1. Vacuum Entity (inherits device name -> vacuum.ecovacs_deebot_ozmo_930)
 	vacuumConfig := map[string]interface{}{
-		"name":                  "OZMO 930",
+		"name":                  nil,
 		"unique_id":             "ozmo_930_vacuum",
-		"object_id":             "ozmo_930",
 		"device":                device,
 		"schema":                "state",
 		"state_topic":           fmt.Sprintf("%s/state", topicPrefix),
@@ -45,12 +44,11 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 	}
 	publishJSON(client, fmt.Sprintf("%s/vacuum/ozmo_930/config", haPrefix), vacuumConfig)
 
-	// 2. Camera Entity for HA vacuum map cards (creates camera.ozmo_930_map_data)
+	// 2. Camera Entity for HA vacuum map cards (camera.ecovacs_deebot_ozmo_930_map_data)
 	// Serves a PNG with an embedded ValetudoMap zTXt chunk.
 	cameraConfig := map[string]interface{}{
-		"name":                  "OZMO 930 Map Data",
+		"name":                  "Map Data",
 		"unique_id":             "ozmo_930_map_data",
-		"object_id":             "ozmo_930_map_data",
 		"device":                device,
 		"topic":                 fmt.Sprintf("%s/map_data", topicPrefix),
 		"json_attributes_topic": fmt.Sprintf("%s/map_attributes", topicPrefix),
@@ -69,9 +67,8 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 
 	// 4. Binary Sensor: Water Box Installed
 	waterBoxConfig := map[string]interface{}{
-		"name":         "OZMO Water Box Installed",
+		"name":         "Water Box Installed",
 		"unique_id":    "ozmo_930_water_box",
-		"object_id":    "ozmo_930_water_box",
 		"device":       device,
 		"device_class": "presence",
 		"state_topic":  fmt.Sprintf("%s/water_box", topicPrefix),
@@ -83,9 +80,8 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 
 	// 5. Select Entity: Water Flow Rate
 	waterFlowConfig := map[string]interface{}{
-		"name":          "OZMO Water Flow Rate",
+		"name":          "Water Flow Rate",
 		"unique_id":     "ozmo_930_water_flow",
-		"object_id":     "ozmo_930_water_flow",
 		"device":        device,
 		"state_topic":   fmt.Sprintf("%s/water_flow", topicPrefix),
 		"command_topic": fmt.Sprintf("%s/set_water_flow", topicPrefix),
@@ -96,9 +92,8 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 
 	// 5b. Switch Entity: Carpet Boost (BPC)
 	carpetBoostConfig := map[string]interface{}{
-		"name":          "OZMO Carpet Boost",
+		"name":          "Carpet Boost",
 		"unique_id":     "ozmo_930_carpet_boost",
-		"object_id":     "ozmo_930_carpet_boost",
 		"device":        device,
 		"state_topic":   fmt.Sprintf("%s/carpet_boost", topicPrefix),
 		"command_topic": fmt.Sprintf("%s/set_carpet_boost", topicPrefix),
@@ -110,9 +105,8 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 
 	// 5c. Switch Entity: Continuous Cleaning (Breakpoint Resume)
 	continuousCleanConfig := map[string]interface{}{
-		"name":          "OZMO Continuous Cleaning",
+		"name":          "Continuous Cleaning",
 		"unique_id":     "ozmo_930_continuous_clean",
-		"object_id":     "ozmo_930_continuous_clean",
 		"device":        device,
 		"state_topic":   fmt.Sprintf("%s/continuous_clean", topicPrefix),
 		"command_topic": fmt.Sprintf("%s/set_continuous_clean", topicPrefix),
@@ -124,9 +118,8 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 
 	// 5d. Switch Entity: Voice Reports (Sound Prompts)
 	voiceReportsConfig := map[string]interface{}{
-		"name":          "OZMO Voice Reports",
+		"name":          "Voice Reports",
 		"unique_id":     "ozmo_930_voice_reports",
-		"object_id":     "ozmo_930_voice_reports",
 		"device":        device,
 		"state_topic":   fmt.Sprintf("%s/voice_reports", topicPrefix),
 		"command_topic": fmt.Sprintf("%s/set_voice_reports", topicPrefix),
@@ -138,9 +131,8 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 
 	// 5e. Switch Entity: Do Not Disturb Mode (DND)
 	dndConfig := map[string]interface{}{
-		"name":          "OZMO Do Not Disturb",
+		"name":          "Do Not Disturb",
 		"unique_id":     "ozmo_930_dnd",
-		"object_id":     "ozmo_930_dnd",
 		"device":        device,
 		"state_topic":   fmt.Sprintf("%s/dnd", topicPrefix),
 		"command_topic": fmt.Sprintf("%s/set_dnd", topicPrefix),
@@ -157,9 +149,8 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 		{"reset_dust_filter", "Reset Dust Filter Lifespan", "reset_dust_filter", "mdi:air-filter"},
 	} {
 		btnConfig := map[string]interface{}{
-			"name":          "OZMO " + comp.name,
+			"name":          comp.name,
 			"unique_id":     "ozmo_930_" + comp.id,
-			"object_id":     "ozmo_930_" + comp.id,
 			"device":        device,
 			"command_topic": fmt.Sprintf("%s/%s", topicPrefix, comp.topic),
 			"icon":          comp.icon,
@@ -172,9 +163,8 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 
 	// 6. Number Entity: Speaker Volume
 	volumeConfig := map[string]interface{}{
-		"name":          "OZMO Speaker Volume",
+		"name":          "Speaker Volume",
 		"unique_id":     "ozmo_930_volume",
-		"object_id":     "ozmo_930_volume",
 		"device":        device,
 		"state_topic":   fmt.Sprintf("%s/volume", topicPrefix),
 		"command_topic": fmt.Sprintf("%s/set_volume", topicPrefix),
@@ -193,9 +183,8 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 	sort.Strings(soundOptions)
 
 	soundConfig := map[string]interface{}{
-		"name":          "OZMO Voice Prompt Soundboard",
+		"name":          "Voice Prompt Soundboard",
 		"unique_id":     "ozmo_930_soundboard",
-		"object_id":     "ozmo_930_soundboard",
 		"device":        device,
 		"state_topic":   fmt.Sprintf("%s/last_sound", topicPrefix),
 		"command_topic": fmt.Sprintf("%s/play_sound", topicPrefix),
@@ -204,7 +193,7 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 	}
 	publishJSON(client, fmt.Sprintf("%s/select/ozmo_930_snd/config", haPrefix), soundConfig)
 
-	log.Printf("[HA-MQTT] Auto-Discovery published to %s/ (vacuum.ozmo_930, camera.ozmo_930_map_data)", haPrefix)
+	log.Printf("[HA-MQTT] Auto-Discovery published to %s/ (vacuum.ecovacs_deebot_ozmo_930, camera.ecovacs_deebot_ozmo_930_map_data)", haPrefix)
 	return nil
 }
 
@@ -231,9 +220,8 @@ func ClearOldHADiscovery(client mqtt.Client, haPrefix, sn string) {
 
 func publishSensor(client mqtt.Client, prefix, topicPrefix string, device HADeviceInfo, key, name, unit, icon string) {
 	config := map[string]interface{}{
-		"name":                fmt.Sprintf("OZMO %s", name),
+		"name":                name,
 		"unique_id":           fmt.Sprintf("ozmo_930_%s", key),
-		"object_id":           fmt.Sprintf("ozmo_930_%s", key),
 		"device":              device,
 		"state_topic":         fmt.Sprintf("%s/%s", topicPrefix, key),
 		"unit_of_measurement": unit,

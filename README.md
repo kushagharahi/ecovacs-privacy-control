@@ -108,8 +108,8 @@ Point Home Assistant's MQTT integration directly to `<ROBOT_IP>` on port `1883` 
 If your robot is allowed to reach your existing LAN Mosquitto broker directly, disable the embedded broker in `/data/autostart/25-ecovacs-bot.sh` (`-mqtt-listen off -mqtt-broker tcp://<MQTT_BROKER_IP>:1883`, or `MQTT_LISTEN=off` / `MQTT_BROKER=tcp://<MQTT_BROKER_IP>:1883`) — no bridge config needed in `mosquitto.conf`.
 
 Home Assistant will automatically discover:
-- `vacuum.ecovacs_deebot_ozmo_930_...` (State, Clean, Pause, Return to Base, Locate)
-- `camera.ecovacs_deebot_ozmo_930_ozmo_930_map_data` (Live rendered map with room polygons and active no-go zones)
+- `vacuum.ecovacs_deebot_ozmo_930` (State, Clean, Pause, Return to Base, Locate)
+- `camera.ecovacs_deebot_ozmo_930_map_data` (Live rendered map with room polygons and active no-go zones)
 - Sensors for battery level, charging state, main brush, side brushes, dust filter, and clean stats
 - Binary sensor for mopping water tank attachment
 - Switches for carpet boost, continuous clean, voice reports, and DND
@@ -133,10 +133,10 @@ Install [lovelace-xiaomi-vacuum-map-card](https://github.com/kushagharahi/lovela
 ```yaml
 type: custom:xiaomi-vacuum-map-card
 title: Interactive Rooms & Zone Cleaning
-entity: vacuum.ecovacs_deebot_ozmo_930_ozmo_930
+entity: vacuum.ecovacs_deebot_ozmo_930
 vacuum_platform: Hypfer/Valetudo
 map_source:
-  camera: camera.ecovacs_deebot_ozmo_930_ozmo_930_map_data
+  camera: camera.ecovacs_deebot_ozmo_930_map_data
 calibration_source:
   calibration_points:
     - vacuum:
