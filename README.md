@@ -118,6 +118,8 @@ Home Assistant will automatically discover:
 
 ### 5. Interactive Map Card (Rooms, Zones, Spot, Go-To & No-Go Zones)
 
+![Home Assistant Interactive Map Card](docs/ha_map_card.png)
+
 Install [lovelace-xiaomi-vacuum-map-card](https://github.com/kushagharahi/lovelace-xiaomi-vacuum-map-card) via HACS (add as a custom Dashboard repository), then add a **Manual** card to your Home Assistant dashboard with the YAML below:
 
 1. Replace `<ROBOT_SN>` in both `internal_variables.topic` and the `Clear No-Go Zones` icon's `service_data.topic` with your robot's serial number (e.g., `ecovacs/<ROBOT_SN>`).
