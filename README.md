@@ -320,9 +320,11 @@ The controller exposes a local REST API on port `8000`:
 - [x] Consumable lifespan sensors & mopping water tank detection
 - [x] Run controller and HA MQTT bridge directly on the robot itself (zero external server)
 - [ ] Fix pause button quirks during certain navigation states
-- [ ] Auto-create interactive map rooms/zones in Lovelace
+- [x] Auto-create interactive map rooms/zones in Lovelace
 - [x] One-click deployment script for custom firmware patches (`robot_patches/deploy.py`)
 - [ ] Integration tests via firmware emulation in QEMU
+- [ ] Fix reboots causing a blind search for dock
+- [ ] Fix soundboard dropdown preventing from selecting the selected sound
 
 ---
 

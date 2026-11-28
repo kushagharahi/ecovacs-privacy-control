@@ -48,6 +48,7 @@
 
 #define LOG_FILE        "/tmp/nav_boost.log"
 #define UNDERERG_LIB    "/usr/lib/libUnderErg.so"
+#define ERGODIC_PLUGIN  "/usr/lib/medusa/plug_medusa_plugin_task_ergodic.so"
 #define RETURN_PLUGIN   "/usr/lib/medusa/plug_medusa_plugin_task_return.so"
 
 /* pAdapterDeebot_9 verified offsets on Ozmo 930 (libUnderErg.so) */
@@ -114,6 +115,12 @@ typedef int     (*alert_bool_fn)(void);
 typedef void    (*nav_record_stuck_cell_fn)(int gx, int gy, uint8_t weight);
 typedef int     (*startReturn_fn)(void);
 typedef uint8_t (*searchdock_fn)(void);
+typedef int     (*range_flag_fn)(void);
+typedef void    (*void_fn)(void);
+typedef void   *(*get_map_fn)(void);
+typedef void    (*copy_loc_to_800_fn)(void *map800);
+typedef void    (*refresh_800_to_400_fn)(void *map800, void *map400, void *pred_fn);
+typedef void    (*mark_vwall_fn)(int a, int b, int v1, int v2, void *map800);
 
 static adjustSpeed_fn           real_adjustSpeed           = NULL;
 static dwb_bumpUpdate_fn        real_dwb_bumpUpdate        = NULL;
@@ -128,6 +135,15 @@ static void                   **pp_robot_lds_pic           = NULL;
 static nav_record_stuck_cell_fn fn_nav_record_stuck_cell   = NULL;
 static startReturn_fn           real_startReturnToCharger  = NULL;
 static searchdock_fn            real_searchdock            = NULL;
+static range_flag_fn            real_isUnnecessaryRangeDef = NULL;
+static void_fn                  real_removeUnnecessaryByLoc= NULL;
+static get_map_fn               real_map_getGridMap        = NULL;
+static get_map_fn               real_map_getGridMapReduced = NULL;
+static copy_loc_to_800_fn       real_copyLocToInt800       = NULL;
+static refresh_800_to_400_fn    real_refresh800To400       = NULL;
+static void                    *fn_is8neighbours5Free800   = NULL;
+static alert_bool_fn            real_isChargerFrontPoseSet = NULL;
+static mark_vwall_fn            real_markVirtualWallToMap  = NULL;
 
 static pthread_mutex_t g_log_mutex  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_init_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -235,6 +251,19 @@ static void ensure_symbols(void) {
             real_isSmallWheelStoped  = (alert_bool_fn)dlsym(h_erg, "_alert_isSmallWheelStoped");
             pp_adapter_deebot9       = (void **)dlsym(h_erg, "pAdapterDeebot_9");
             pp_robot_lds_pic         = (void **)dlsym(h_erg, "pRobotLdsPic");
+            real_isUnnecessaryRangeDef  = (range_flag_fn)dlsym(h_erg, "map_isUnnecessaryRangeDefinedFlag");
+            real_removeUnnecessaryByLoc = (void_fn)dlsym(h_erg, "map_removeUnnecessaryRangeByLocationMap");
+            real_map_getGridMap         = (get_map_fn)dlsym(h_erg, "map_getGridMap");
+            real_map_getGridMapReduced  = (get_map_fn)dlsym(h_erg, "map_getGridMapReduced");
+            real_copyLocToInt800        = (copy_loc_to_800_fn)dlsym(h_erg, "map_copyGridMapFromLocationMapToInt800");
+            real_refresh800To400        = (refresh_800_to_400_fn)dlsym(h_erg, "map_refreshGridMapFromInt800ToInt400");
+            fn_is8neighbours5Free800    = dlsym(h_erg, "map_is8neighbours5FreeInMapInt800");
+        }
+
+        void *h_task_erg = dlopen(ERGODIC_PLUGIN, RTLD_NOLOAD | RTLD_NOW);
+        if (h_task_erg) {
+            real_isChargerFrontPoseSet = (alert_bool_fn)dlsym(h_task_erg, "erg_isChargerFrontPoseSet");
+            real_markVirtualWallToMap  = (mark_vwall_fn)dlsym(h_task_erg, "erg_markVirtualWallToMap");
         }
 
         void *h_ret = dlopen(RETURN_PLUGIN, RTLD_NOLOAD | RTLD_NOW);
@@ -814,7 +843,82 @@ int bumpStuckCheckAndHandle(void (*on_clear)(void), void (*on_fail)(void),
 }
 
 /*
- * 5. Return-to-dock state tracker (disables VFH+ during final IR dock alignment)
+ * 5. Cold-boot Return-to-Dock A* Costmap Hydration (fixes factory bug in erg_gotoOriginalLocationInit)
+ *
+ * On a fresh medusa boot/restart before any clean has run, DAT_00ece548
+ * (map_isUnnecessaryRangeDefinedFlag) is 0 even when a valid saved map + dock front
+ * pose are loaded in SLAM, causing erg_gotoOriginalLocationInit to abort in 0ms and
+ * jump straight to blind IR searchdock(). When called from erg_gotoOriginalLocationInit
+ * with flag == 0, we hydrate the 800x800 and 400x400 A* costmaps from the loaded SLAM
+ * map (including virtual walls) and initialize the working range so it A*-paths home.
+ */
+int map_isUnnecessaryRangeDefinedFlag(void) {
+    ensure_symbols();
+    if (!real_isUnnecessaryRangeDef) return 0;
+
+    int defined = real_isUnnecessaryRangeDef();
+    if (defined != 0 || !is_medusa_process()) {
+        return defined;
+    }
+
+    void *ret_addr = __builtin_return_address(0);
+    Dl_info dli;
+    if (!ret_addr || !dladdr(ret_addr, &dli) || !dli.dli_sname ||
+        strcmp(dli.dli_sname, "erg_gotoOriginalLocationInit") != 0) {
+        return 0;
+    }
+
+    /* Lazy-resolve task_ergodic symbols if plugin loaded after init */
+    if (!real_isChargerFrontPoseSet || !real_markVirtualWallToMap) {
+        void *h_task_erg = dlopen(ERGODIC_PLUGIN, RTLD_NOLOAD | RTLD_NOW);
+        if (h_task_erg) {
+            if (!real_isChargerFrontPoseSet)
+                real_isChargerFrontPoseSet = (alert_bool_fn)dlsym(h_task_erg, "erg_isChargerFrontPoseSet");
+            if (!real_markVirtualWallToMap)
+                real_markVirtualWallToMap = (mark_vwall_fn)dlsym(h_task_erg, "erg_markVirtualWallToMap");
+        }
+    }
+
+    if (!real_isChargerFrontPoseSet || !real_isChargerFrontPoseSet() ||
+        !real_map_getGridMap || !real_map_getGridMapReduced ||
+        !real_copyLocToInt800 || !real_refresh800To400 ||
+        !fn_is8neighbours5Free800 || !real_removeUnnecessaryByLoc) {
+        return 0;
+    }
+
+    int32_t *map800 = (int32_t *)real_map_getGridMap();
+    int32_t *map400 = (int32_t *)real_map_getGridMapReduced();
+    if (!map800 || !map400) return 0;
+
+    real_copyLocToInt800(map800);
+
+    /* Verify SLAM map actually contains valid free floor cells before enabling A* */
+    int free_cells = 0;
+    for (int i = 0; i < 800 * 800; i++) {
+        int32_t v = map800[i];
+        if (v >= 1 && v <= 127) {
+            if (++free_cells >= 200) break;
+        }
+    }
+    if (free_cells < 200) {
+        log_msg("[NAV-BOOST] Cold-boot Return-to-Dock: SLAM map empty (free=%d), keeping default\n", free_cells);
+        return 0;
+    }
+
+    if (real_markVirtualWallToMap) {
+        real_markVirtualWallToMap(4, 4, 0xc1, 0xc1, map800);
+    }
+    real_refresh800To400(map800, map400, fn_is8neighbours5Free800);
+    real_removeUnnecessaryByLoc();
+
+    int now_def = real_isUnnecessaryRangeDef();
+    log_msg("[NAV-BOOST] Cold-boot Return-to-Dock: hydrated 800x800/400x400 A* costmaps from SLAM -> rangeDefined=%d\n",
+            now_def);
+    return now_def;
+}
+
+/*
+ * 6. Return-to-dock state tracker (disables VFH+ during final IR dock alignment)
  */
 int startReturnToCharger(void) {
     ensure_symbols();
