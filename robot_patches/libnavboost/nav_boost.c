@@ -186,6 +186,7 @@ static int      g_cluster_gx = -1;
 static int      g_cluster_gy = -1;
 static int      g_cluster_hits = 0;
 static uint64_t g_cluster_start_ms = 0;
+static uint64_t g_last_bump_ev_ms  = 0;
 
 /* Bump-stuck anti-deadlock state */
 static uint64_t g_stuck_start_ms = 0;
@@ -807,6 +808,13 @@ void dwb_bumpUpdateInGridMapAndReduced(float x, float y, float theta) {
     pthread_mutex_lock(&g_nav_mutex);
     g_last_gx = gx;
     g_last_gy = gy;
+
+    /* Debounce sustained single bumper contact (350ms) so 1 wall tap != 6 cluster hits */
+    if (g_last_bump_ev_ms != 0 && (t - g_last_bump_ev_ms) < 350) {
+        pthread_mutex_unlock(&g_nav_mutex);
+        return;
+    }
+    g_last_bump_ev_ms = t;
 
     if (g_cluster_hits > 0 &&
         (t - g_cluster_start_ms) <= BUMP_CLUSTER_WIN_MS &&
