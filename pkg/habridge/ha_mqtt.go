@@ -90,6 +90,18 @@ func PublishHADiscovery(client mqtt.Client, haPrefix, topicPrefix, sn string) er
 	}
 	publishJSON(client, fmt.Sprintf("%s/select/ozmo_930_wf/config", haPrefix), waterFlowConfig)
 
+	// 5a. Select Entity: Hardware Suction Power (via libsilentgoto MCU 'MA' packet override)
+	suctionPowerConfig := map[string]interface{}{
+		"name":          "Suction Power",
+		"unique_id":     "ozmo_930_suction_power",
+		"device":        device,
+		"state_topic":   fmt.Sprintf("%s/suction_power", topicPrefix),
+		"command_topic": fmt.Sprintf("%s/set_suction_power", topicPrefix),
+		"options":       []string{"Quiet", "Standard", "Max"},
+		"icon":          "mdi:fan",
+	}
+	publishJSON(client, fmt.Sprintf("%s/select/ozmo_930_sp/config", haPrefix), suctionPowerConfig)
+
 	// 5b. Switch Entity: Carpet Boost (BPC)
 	carpetBoostConfig := map[string]interface{}{
 		"name":          "Carpet Boost",

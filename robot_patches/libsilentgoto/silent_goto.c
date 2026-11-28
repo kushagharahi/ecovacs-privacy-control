@@ -9,10 +9,23 @@
 #include <syslog.h>
 #include <pthread.h>
 #include <fcntl.h>
+#include <sys/stat.h>
+#include <time.h>
 
 #define SILENT_GOTO_TRIGGER "/tmp/silent_goto"
+#define SUCTION_MODE_FILE   "/data/config/suction_mode"
 #define LOG_FILE "/tmp/silent_goto.log"
 #define MMI_PERIPH_PLUGIN "/usr/lib/medusa/plug_mmi_periph.so"
+
+/* Suction power modes (within OEM continuous hardware ratings: <= 15,000 RPM, <= 11.5V brush) */
+#define SUCTION_MODE_QUIET    0
+#define SUCTION_MODE_STANDARD 1
+#define SUCTION_MODE_MAX      2
+
+static void *g_last_motor_ctx = NULL;
+static int   g_suction_mode   = SUCTION_MODE_STANDARD;
+static time_t g_last_stat_sec = 0;
+static time_t g_file_mtime    = -1;
 
 static uint32_t (*real_MdsMotorControl)(void *ctx) = NULL;
 static uint32_t (*real_MdsMmiMotorElemCastMotorSetMmiMsg)(void *ctx) = NULL;
@@ -100,6 +113,53 @@ static int is_medusa_process(void) {
     return 0;
 }
 
+/* Refresh cached suction mode from /data/config/suction_mode at most once per second.
+ * Returns 1 if the configured mode changed since last check. */
+static int refresh_suction_mode(int force) {
+    time_t now = time(NULL);
+    if (!force && now == g_last_stat_sec) {
+        return 0;
+    }
+    g_last_stat_sec = now;
+
+    struct stat st;
+    if (stat(SUCTION_MODE_FILE, &st) != 0) {
+        if (g_file_mtime != 0) {
+            int changed = (g_suction_mode != SUCTION_MODE_STANDARD);
+            g_file_mtime = 0;
+            g_suction_mode = SUCTION_MODE_STANDARD;
+            return changed;
+        }
+        return 0;
+    }
+
+    if (!force && st.st_mtime == g_file_mtime) {
+        return 0;
+    }
+    g_file_mtime = st.st_mtime;
+
+    char buf[32] = {0};
+    FILE *f = fopen(SUCTION_MODE_FILE, "r");
+    if (!f) return 0;
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+
+    int new_mode = SUCTION_MODE_STANDARD;
+    if (strstr(buf, "quiet") || strstr(buf, "Quiet")) {
+        new_mode = SUCTION_MODE_QUIET;
+    } else if (strstr(buf, "max") || strstr(buf, "Max") || strstr(buf, "turbo")) {
+        new_mode = SUCTION_MODE_MAX;
+    }
+
+    int changed = (new_mode != g_suction_mode);
+    g_suction_mode = new_mode;
+    if (changed) {
+        log_msg("[SUCTION] Loaded suction_mode=%d (0=quiet, 1=standard, 2=max)\n", g_suction_mode);
+    }
+    return changed;
+}
+
 /*
  * MDSElemCastMsg in /usr/bin/medusa:
  * Universal message dispatcher between medusa elements.
@@ -146,6 +206,14 @@ uint32_t MDSElemCastMsg(int param_1, const char *param_2, void *param_3) {
                 }
             }
         }
+    } else if (g_last_motor_ctx != NULL && refresh_suction_mode(0)) {
+        /* Live mid-clean suction update on medusa's event loop when /data/config/suction_mode changes */
+        int cur_mode = *(int *)((char *)g_last_motor_ctx + 0x3c);
+        if ((cur_mode == 0 || cur_mode == 3) && real_MdsMotorControl) {
+            log_msg("[SUCTION] Applying live mid-clean suction change (motor_mode=%d -> suction=%d)\n",
+                    cur_mode, g_suction_mode);
+            real_MdsMotorControl(g_last_motor_ctx);
+        }
     }
 
     return real_MDSElemCastMsg(param_1, param_2, param_3);
@@ -164,10 +232,13 @@ uint32_t MdsMotorControl(void *ctx) {
         }
     }
 
-    if (ctx != NULL && access(SILENT_GOTO_TRIGGER, F_OK) == 0) {
-        int *mode = (int *)((char *)ctx + 0x3c);
-        log_msg("[SILENT-GOTO] MdsMotorControl: Overriding mode from %d to 2\n", *mode);
-        *mode = 2; // Force Idle mode (All cleaning motors 0 RPM)
+    if (ctx != NULL) {
+        g_last_motor_ctx = ctx;
+        if (access(SILENT_GOTO_TRIGGER, F_OK) == 0) {
+            int *mode = (int *)((char *)ctx + 0x3c);
+            log_msg("[SILENT-GOTO] MdsMotorControl: Overriding mode from %d to 2\n", *mode);
+            *mode = 2; // Force Idle mode (All cleaning motors 0 RPM)
+        }
     }
 
     return real_MdsMotorControl(ctx);
@@ -185,14 +256,48 @@ uint32_t MdsMmiMotorElemCastMotorSetMmiMsg(void *ctx) {
         }
     }
 
-    if (ctx != NULL && access(SILENT_GOTO_TRIGGER, F_OK) == 0) {
-        // Zero all motor speed fields before packet is assembled and sent to STM32
-        *(uint16_t *)((char *)ctx + 0x2a) = 0; // Main brush: 0 RPM
-        *(uint16_t *)((char *)ctx + 0x2e) = 0; // Side brush: 0 RPM
-        *(uint16_t *)((char *)ctx + 0x32) = 0; // Suction motor: 0 RPM
-        *(uint16_t *)((char *)ctx + 0x36) = 0; // Water pump: 0
-        *(uint8_t *)((char *)ctx + 0x35) = 2;
-        log_msg("[SILENT-GOTO] MdsMmiMotorElemCastMotorSetMmiMsg: Zeroed all motor targets\n");
+    if (ctx != NULL) {
+        g_last_motor_ctx = ctx;
+        if (access(SILENT_GOTO_TRIGGER, F_OK) == 0) {
+            // Zero all motor speed fields before packet is assembled and sent to STM32
+            *(uint16_t *)((char *)ctx + 0x2a) = 0; // Main brush: 0
+            *(uint16_t *)((char *)ctx + 0x2e) = 0; // Side brush: 0
+            *(uint16_t *)((char *)ctx + 0x32) = 0; // Suction motor: 0 RPM
+            *(uint16_t *)((char *)ctx + 0x36) = 0; // Water pump: 0
+            *(uint8_t *)((char *)ctx + 0x35) = 2;
+            log_msg("[SILENT-GOTO] MdsMmiMotorElemCastMotorSetMmiMsg: Zeroed all motor targets\n");
+        } else {
+            uint16_t cur_fan = *(uint16_t *)((char *)ctx + 0x32);
+            if (cur_fan > 0) {
+                static uint16_t s_last_logged_fan = 0;
+                static int      s_last_logged_mode = -1;
+                refresh_suction_mode(0);
+                int motor_mode = *(int *)((char *)ctx + 0x3c); /* 0 = normal, 3 = carpet boost */
+                if (g_suction_mode == SUCTION_MODE_QUIET) {
+                    uint16_t target_fan   = (motor_mode == 3) ? 11000 : 7500;
+                    uint16_t target_brush = (motor_mode == 3) ? 100   : 85;
+                    *(uint16_t *)((char *)ctx + 0x32) = target_fan;
+                    *(uint16_t *)((char *)ctx + 0x2a) = target_brush;
+                    if (target_fan != s_last_logged_fan || motor_mode != s_last_logged_mode) {
+                        s_last_logged_fan = target_fan;
+                        s_last_logged_mode = motor_mode;
+                        log_msg("[SUCTION] Quiet mode: fan=%u RPM, main_brush=%u (mode=%d)\n",
+                                target_fan, target_brush, motor_mode);
+                    }
+                } else if (g_suction_mode == SUCTION_MODE_MAX) {
+                    *(uint16_t *)((char *)ctx + 0x32) = 15000;
+                    *(uint16_t *)((char *)ctx + 0x2a) = 115;
+                    if (15000 != s_last_logged_fan || motor_mode != s_last_logged_mode) {
+                        s_last_logged_fan = 15000;
+                        s_last_logged_mode = motor_mode;
+                        log_msg("[SUCTION] Max mode: fan=15000 RPM, main_brush=115 (mode=%d)\n", motor_mode);
+                    }
+                } else {
+                    s_last_logged_fan = cur_fan;
+                    s_last_logged_mode = motor_mode;
+                }
+            }
+        }
     }
 
     return real_MdsMmiMotorElemCastMotorSetMmiMsg(ctx);

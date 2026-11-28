@@ -18,6 +18,7 @@ type StatusResponse struct {
 	WaterLevel           int      `json:"water_level"`
 	WaterBoxInstalled    bool     `json:"water_box_installed"`
 	CarpetBoost          bool     `json:"carpet_boost"`
+	SuctionPower         string   `json:"suction_power,omitempty"`
 	CleanSpeed           string   `json:"clean_speed"`
 	SleepStatus          string   `json:"sleep_status"`
 	BrushLifeSpan        int      `json:"brush_lifespan"`
@@ -48,7 +49,7 @@ type StatusResponse struct {
 // VirtualRestriction represents a virtual wall or no-go boundary
 type VirtualRestriction struct {
 	ID     int    `json:"id"`
-	Type   string `json:"type"` // "virtual_wall" or "no_go_area"
+	Type   string `json:"type"`   // "virtual_wall" or "no_go_area"
 	Points []int  `json:"points"` // raw coordinates in mm: [x1, y1, x2, y2] or [x1, y1, x2, y2, x3, y3, x4, y4]
 }
 
@@ -86,74 +87,74 @@ type MapGridResponse struct {
 type Sound int
 
 const (
-	BOOT_UP                               Sound = 0
-	I_AM_SUSPENDED                        Sound = 3
-	PLEASE_CHECK_THE_DRIVING_WHEELS       Sound = 4
-	PLEASE_HELP_ME_OUT                    Sound = 5
-	PLEASE_INSTALL_DUST_BIN               Sound = 6
-	DING                                  Sound = 17
-	MY_BATTERY_IS_LOW                     Sound = 18
-	PLEASE_POWER_ME_ON_BEFORE_CHARGING    Sound = 29
-	SOUND_I_AM_HERE                       Sound = 30
-	BRUSH_IS_TANGLED_PLEASE_CLEAN_MY_BRUSH Sound = 31
-	PLEASE_CLEAN_MY_ANTI_DROP_SENSORS     Sound = 35
-	BRUSH_IS_TANGLED_PLEASE_CLEAN_MY_BRUSH_ALT Sound = 48
-	I_AM_RELOCATING                       Sound = 55
-	UPGRADE_SUCCEEDED                     Sound = 56
-	I_AM_RETURNING_TO_THE_CHARGING_DOCK   Sound = 63
-	CLEANING_PAUSED                       Sound = 65
-	CONNECTED_PLEASE_GO_BACK_TO_THE_ECOVACS Sound = 69
-	I_AM_RESTORING_THE_MAP_PLEASE_DONT_STAND_BESIDE_ME Sound = 71
-	MY_BATTERY_IS_LOW_RETURNING_TO_THE_CHARGING_DOCK Sound = 73
+	BOOT_UP                                                Sound = 0
+	I_AM_SUSPENDED                                         Sound = 3
+	PLEASE_CHECK_THE_DRIVING_WHEELS                        Sound = 4
+	PLEASE_HELP_ME_OUT                                     Sound = 5
+	PLEASE_INSTALL_DUST_BIN                                Sound = 6
+	DING                                                   Sound = 17
+	MY_BATTERY_IS_LOW                                      Sound = 18
+	PLEASE_POWER_ME_ON_BEFORE_CHARGING                     Sound = 29
+	SOUND_I_AM_HERE                                        Sound = 30
+	BRUSH_IS_TANGLED_PLEASE_CLEAN_MY_BRUSH                 Sound = 31
+	PLEASE_CLEAN_MY_ANTI_DROP_SENSORS                      Sound = 35
+	BRUSH_IS_TANGLED_PLEASE_CLEAN_MY_BRUSH_ALT             Sound = 48
+	I_AM_RELOCATING                                        Sound = 55
+	UPGRADE_SUCCEEDED                                      Sound = 56
+	I_AM_RETURNING_TO_THE_CHARGING_DOCK                    Sound = 63
+	CLEANING_PAUSED                                        Sound = 65
+	CONNECTED_PLEASE_GO_BACK_TO_THE_ECOVACS                Sound = 69
+	I_AM_RESTORING_THE_MAP_PLEASE_DONT_STAND_BESIDE_ME     Sound = 71
+	MY_BATTERY_IS_LOW_RETURNING_TO_THE_CHARGING_DOCK       Sound = 73
 	DIFFICULT_TO_LOCATE_I_AM_STARTING_A_NEW_CLEANING_CYCLE Sound = 74
-	I_AM_RESUMING_THE_CLEAN               Sound = 75
-	UPGRADE_FAILED_PLEASE_TRY_AGAIN       Sound = 76
-	PLEASE_PLACE_ME_ON_THE_CHARGING_DOCK  Sound = 77
-	RESUME_THE_CLEAN                      Sound = 79
-	I_AM_STARTING_THE_CLEAN               Sound = 80
-	I_AM_STARTING_THE_CLEAN_ALT           Sound = 81
-	I_AM_STARTING_THE_CLEAN_ALT2          Sound = 82
-	I_AM_READY_FOR_MOPPING                Sound = 84
-	PLEASE_REMOVE_THE_MOPPING_PLATE_I_AM_BUILDING_THE_MAP Sound = 85
-	CLEANING_IS_COMPLETE_RETURNING_TO_THE_CHARGING_DOCK Sound = 86
-	LDS_MALFUNCTION_PLEASE_TRY_TO_TAP_THE_LDS Sound = 89
-	I_AM_UPGRADING_PLEASE_WAIT            Sound = 90
+	I_AM_RESUMING_THE_CLEAN                                Sound = 75
+	UPGRADE_FAILED_PLEASE_TRY_AGAIN                        Sound = 76
+	PLEASE_PLACE_ME_ON_THE_CHARGING_DOCK                   Sound = 77
+	RESUME_THE_CLEAN                                       Sound = 79
+	I_AM_STARTING_THE_CLEAN                                Sound = 80
+	I_AM_STARTING_THE_CLEAN_ALT                            Sound = 81
+	I_AM_STARTING_THE_CLEAN_ALT2                           Sound = 82
+	I_AM_READY_FOR_MOPPING                                 Sound = 84
+	PLEASE_REMOVE_THE_MOPPING_PLATE_I_AM_BUILDING_THE_MAP  Sound = 85
+	CLEANING_IS_COMPLETE_RETURNING_TO_THE_CHARGING_DOCK    Sound = 86
+	LDS_MALFUNCTION_PLEASE_TRY_TO_TAP_THE_LDS              Sound = 89
+	I_AM_UPGRADING_PLEASE_WAIT                             Sound = 90
 )
 
 // StockSounds contains the factory firmware sound IDs and official descriptions
 var StockSounds = map[Sound]string{
-	BOOT_UP:                               "Boot up chime",
-	I_AM_SUSPENDED:                        "i am suspended",
-	PLEASE_CHECK_THE_DRIVING_WHEELS:       "Please check the driving wheels",
-	PLEASE_HELP_ME_OUT:                    "Please help me out",
-	PLEASE_INSTALL_DUST_BIN:               "Please install dust bin",
-	DING:                                  "ding",
-	MY_BATTERY_IS_LOW:                     "my battery is low",
-	PLEASE_POWER_ME_ON_BEFORE_CHARGING:    "please power me on before charging",
-	SOUND_I_AM_HERE:                       "i am here",
-	BRUSH_IS_TANGLED_PLEASE_CLEAN_MY_BRUSH: "brush is tangled please clean my brush",
-	PLEASE_CLEAN_MY_ANTI_DROP_SENSORS:     "please clean my anti drop sensors",
+	BOOT_UP:                                    "Boot up chime",
+	I_AM_SUSPENDED:                             "i am suspended",
+	PLEASE_CHECK_THE_DRIVING_WHEELS:            "Please check the driving wheels",
+	PLEASE_HELP_ME_OUT:                         "Please help me out",
+	PLEASE_INSTALL_DUST_BIN:                    "Please install dust bin",
+	DING:                                       "ding",
+	MY_BATTERY_IS_LOW:                          "my battery is low",
+	PLEASE_POWER_ME_ON_BEFORE_CHARGING:         "please power me on before charging",
+	SOUND_I_AM_HERE:                            "i am here",
+	BRUSH_IS_TANGLED_PLEASE_CLEAN_MY_BRUSH:     "brush is tangled please clean my brush",
+	PLEASE_CLEAN_MY_ANTI_DROP_SENSORS:          "please clean my anti drop sensors",
 	BRUSH_IS_TANGLED_PLEASE_CLEAN_MY_BRUSH_ALT: "brush is tangled please clean my brush",
-	I_AM_RELOCATING:                       "I am relocating",
-	UPGRADE_SUCCEEDED:                     "upgrade succeeded",
-	I_AM_RETURNING_TO_THE_CHARGING_DOCK:   "i am returning to the charging dock",
-	CLEANING_PAUSED:                       "cleaning paused",
-	CONNECTED_PLEASE_GO_BACK_TO_THE_ECOVACS: "connected please go back to the ecovacs",
-	I_AM_RESTORING_THE_MAP_PLEASE_DONT_STAND_BESIDE_ME: "i am restoring the map please don't stand beside me",
-	MY_BATTERY_IS_LOW_RETURNING_TO_THE_CHARGING_DOCK: "my battery is low returning to the charging dock",
+	I_AM_RELOCATING:                            "I am relocating",
+	UPGRADE_SUCCEEDED:                          "upgrade succeeded",
+	I_AM_RETURNING_TO_THE_CHARGING_DOCK:        "i am returning to the charging dock",
+	CLEANING_PAUSED:                            "cleaning paused",
+	CONNECTED_PLEASE_GO_BACK_TO_THE_ECOVACS:    "connected please go back to the ecovacs",
+	I_AM_RESTORING_THE_MAP_PLEASE_DONT_STAND_BESIDE_ME:     "i am restoring the map please don't stand beside me",
+	MY_BATTERY_IS_LOW_RETURNING_TO_THE_CHARGING_DOCK:       "my battery is low returning to the charging dock",
 	DIFFICULT_TO_LOCATE_I_AM_STARTING_A_NEW_CLEANING_CYCLE: "difficult to locate i am starting a new cleaning cycle",
-	I_AM_RESUMING_THE_CLEAN:               "i am resuming the clean",
-	UPGRADE_FAILED_PLEASE_TRY_AGAIN:       "upgrade failed please try again",
-	PLEASE_PLACE_ME_ON_THE_CHARGING_DOCK:  "please place me on the charging dock",
-	RESUME_THE_CLEAN:                      "resume the clean",
-	I_AM_STARTING_THE_CLEAN:               "i am starting the clean",
-	I_AM_STARTING_THE_CLEAN_ALT:           "i am starting the clean",
-	I_AM_STARTING_THE_CLEAN_ALT2:          "i am starting the clean",
-	I_AM_READY_FOR_MOPPING:                "i am ready for mopping",
-	PLEASE_REMOVE_THE_MOPPING_PLATE_I_AM_BUILDING_THE_MAP: "please remove the mopping plate i am building the map",
-	CLEANING_IS_COMPLETE_RETURNING_TO_THE_CHARGING_DOCK: "cleaning is complete returning to the charging dock",
-	LDS_MALFUNCTION_PLEASE_TRY_TO_TAP_THE_LDS: "LDS malfunction please try to tap the LDS",
-	I_AM_UPGRADING_PLEASE_WAIT:            "I am upgrading please wait",
+	I_AM_RESUMING_THE_CLEAN:                                "i am resuming the clean",
+	UPGRADE_FAILED_PLEASE_TRY_AGAIN:                        "upgrade failed please try again",
+	PLEASE_PLACE_ME_ON_THE_CHARGING_DOCK:                   "please place me on the charging dock",
+	RESUME_THE_CLEAN:                                       "resume the clean",
+	I_AM_STARTING_THE_CLEAN:                                "i am starting the clean",
+	I_AM_STARTING_THE_CLEAN_ALT:                            "i am starting the clean",
+	I_AM_STARTING_THE_CLEAN_ALT2:                           "i am starting the clean",
+	I_AM_READY_FOR_MOPPING:                                 "i am ready for mopping",
+	PLEASE_REMOVE_THE_MOPPING_PLATE_I_AM_BUILDING_THE_MAP:  "please remove the mopping plate i am building the map",
+	CLEANING_IS_COMPLETE_RETURNING_TO_THE_CHARGING_DOCK:    "cleaning is complete returning to the charging dock",
+	LDS_MALFUNCTION_PLEASE_TRY_TO_TAP_THE_LDS:              "LDS malfunction please try to tap the LDS",
+	I_AM_UPGRADING_PLEASE_WAIT:                             "I am upgrading please wait",
 }
 
 // AvailableSounds maps all currently available sounds (Stock + dynamically discovered/configured custom sounds)

@@ -47,9 +47,18 @@
  */
 
 #define LOG_FILE        "/tmp/nav_boost.log"
+#define SILENT_GOTO_FILE "/tmp/silent_goto"
 #define UNDERERG_LIB    "/usr/lib/libUnderErg.so"
 #define ERGODIC_PLUGIN  "/usr/lib/medusa/plug_medusa_plugin_task_ergodic.so"
 #define RETURN_PLUGIN   "/usr/lib/medusa/plug_medusa_plugin_task_return.so"
+
+/* Open-floor non-cleaning transit speed boost (Pin & Go + Return-to-Dock A*) */
+#define TRANSIT_MIN_CRUISE_SPD  16.0f
+#define TRANSIT_MAX_DIFF_SPD    3.5f
+#define TRANSIT_RUNWAY_MM       1100.0f  /* Require >= 1.1m clear Lidar runway ahead */
+#define TRANSIT_CORRIDOR_Y_MM   250.0f
+#define TRANSIT_BOOST_FACTOR    1.22f    /* +22% straightaway cruise boost */
+#define TRANSIT_MAX_SPD_CAP     32.5f
 
 /* pAdapterDeebot_9 verified offsets on Ozmo 930 (libUnderErg.so) */
 #define OFF_BUMP_FLAG   0x000c
@@ -63,17 +72,17 @@
 #define OFF_POSE_X      0x2c08  /* float pose X */
 #define OFF_POSE_Y      0x2c0c  /* float pose Y */
 
-/* VFH+ 72-sector polar histogram parameters (matching libvfh.so 72x5 deg) */
+/* VFH+ 72-sector polar histogram parameters (matching Ozmo 950 libDeebot/libvfh point-to-point transit) */
 #define VFH_SECTORS         72
 #define VFH_SECTOR_DEG      5.0f
-#define VFH_ROBOT_EFF_MM    222.0f  /* 177mm 930 radius + 45mm safety margin */
-#define VFH_SCAN_MAX_MM     900.0f  /* Consider obstacles within 900mm for histogram */
-#define VFH_TRIGGER_MAX_MM  460.0f  /* Trigger avoidance when obstacle < 460mm ahead */
+#define VFH_ROBOT_EFF_MM    185.0f  /* 177mm 930 radius + 8mm margin so 70cm doorways remain open at 0 deg */
+#define VFH_SCAN_MAX_MM     750.0f  /* Consider obstacles within 750mm for histogram */
+#define VFH_TRIGGER_MAX_MM  330.0f  /* Trigger avoidance only when unexpected obstacle < 330mm ahead */
 #define VFH_TRIGGER_MIN_MM  155.0f  /* Ignore self-reflections inside chassis */
-#define VFH_CORRIDOR_Y_MM   205.0f  /* Half-width of forward danger corridor */
+#define VFH_CORRIDOR_Y_MM   172.0f  /* Strictly inside 350mm chassis width so door jambs do not trigger */
 #define VFH_MIN_CONFIRM_PTS 3       /* Require >=3 Lidar hits to avoid single-ray noise */
-#define VFH_MAX_STEER_SEC   14      /* +-70 deg (14 * 5 deg) valley search window */
-#define VFH_MIN_VALLEY_W    3       /* Minimum contiguous free sectors (15 deg) */
+#define VFH_MAX_STEER_SEC   12      /* +-60 deg (12 * 5 deg) valley search window */
+#define VFH_MIN_VALLEY_W    2       /* Minimum contiguous free sectors (10 deg) */
 #define VFH_MAX_PTS         720
 
 /* Slew-rate limiter */
@@ -121,6 +130,7 @@ typedef void   *(*get_map_fn)(void);
 typedef void    (*copy_loc_to_800_fn)(void *map800);
 typedef void    (*refresh_800_to_400_fn)(void *map800, void *map400, void *pred_fn);
 typedef void    (*mark_vwall_fn)(int a, int b, int v1, int v2, void *map800);
+typedef uint32_t (*mc_follow_pt_fn)(void);
 
 static adjustSpeed_fn           real_adjustSpeed           = NULL;
 static dwb_bumpUpdate_fn        real_dwb_bumpUpdate        = NULL;
@@ -144,6 +154,9 @@ static refresh_800_to_400_fn    real_refresh800To400       = NULL;
 static void                    *fn_is8neighbours5Free800   = NULL;
 static alert_bool_fn            real_isChargerFrontPoseSet = NULL;
 static mark_vwall_fn            real_markVirtualWallToMap  = NULL;
+static mc_follow_pt_fn          real_mc_motion_followPoint = NULL;
+
+static __thread int g_follow_point_depth = 0;
 
 static pthread_mutex_t g_log_mutex  = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_init_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -179,10 +192,14 @@ static uint64_t g_stuck_start_ms = 0;
 static uint64_t g_pulse_start_ms = 0;
 static uint64_t g_last_pulse_ms  = 0;
 
-/* Docking & VFH state / rate-limited logs */
-static uint64_t g_dock_active_until_ms = 0;
-static uint64_t g_last_dock_log_ms     = 0;
-static uint64_t g_last_vfh_log_ms      = 0;
+/* Docking, transit boost & VFH state / rate-limited logs */
+static uint64_t g_dock_active_until_ms    = 0;
+static uint64_t g_return_transit_until_ms = 0;
+static uint64_t g_silent_check_ms         = 0;
+static int      g_silent_goto_cached      = 0;
+static uint64_t g_last_dock_log_ms        = 0;
+static uint64_t g_last_vfh_log_ms         = 0;
+static uint64_t g_last_boost_log_ms       = 0;
 
 static uint64_t now_ms(void) {
     struct timespec ts;
@@ -258,6 +275,7 @@ static void ensure_symbols(void) {
             real_copyLocToInt800        = (copy_loc_to_800_fn)dlsym(h_erg, "map_copyGridMapFromLocationMapToInt800");
             real_refresh800To400        = (refresh_800_to_400_fn)dlsym(h_erg, "map_refreshGridMapFromInt800ToInt400");
             fn_is8neighbours5Free800    = dlsym(h_erg, "map_is8neighbours5FreeInMapInt800");
+            real_mc_motion_followPoint  = (mc_follow_pt_fn)dlsym(h_erg, "mc_motion_followPoint");
         }
 
         void *h_task_erg = dlopen(ERGODIC_PLUGIN, RTLD_NOLOAD | RTLD_NOW);
@@ -310,6 +328,14 @@ static void report_heat(int gx, int gy, uint8_t weight) {
     }
 }
 
+/* pAdapterDeebot_9 (+0x2c08/+0x2c0c) and dwb_bumpUpdate pass mm; x2idx02/y2idx02 expect meters */
+static inline void mm_to_grid400(float x_mm, float y_mm, int *out_gx, int *out_gy) {
+    float xm = x_mm * 0.001f;
+    float ym = y_mm * 0.001f;
+    if (out_gx) *out_gx = real_x2idx02 ? real_x2idx02(xm) : (int)(xm * 10.0f + 200.0f);
+    if (out_gy) *out_gy = real_y2idx02 ? real_y2idx02(ym) : (int)(ym * 10.0f + 200.0f);
+}
+
 static inline int get_live_pose_and_grid(float *out_x, float *out_y, int *out_gx, int *out_gy) {
     if (!pp_adapter_deebot9 || !*pp_adapter_deebot9) return 0;
     const uint8_t *base = (const uint8_t *)(*pp_adapter_deebot9);
@@ -318,8 +344,32 @@ static inline int get_live_pose_and_grid(float *out_x, float *out_y, int *out_gx
     if (!isfinite(x) || !isfinite(y)) return 0;
     if (out_x) *out_x = x;
     if (out_y) *out_y = y;
-    if (out_gx) *out_gx = real_x2idx02 ? real_x2idx02(x) : (int)(x * 10.0f + 200.0f);
-    if (out_gy) *out_gy = real_y2idx02 ? real_y2idx02(y) : (int)(y * 10.0f + 200.0f);
+    mm_to_grid400(x, y, out_gx, out_gy);
+    return 1;
+}
+
+/* Verify >= min_runway_mm clear Lidar corridor ahead before applying transit boost */
+static int is_lidar_runway_clear(float min_runway_mm, float half_width_mm) {
+    if (!pp_robot_lds_pic || !*pp_robot_lds_pic) return 0;
+    const uint8_t *lds = (const uint8_t *)(*pp_robot_lds_pic);
+    if (pp_adapter_deebot9 && *pp_adapter_deebot9) {
+        const uint8_t *adp = (const uint8_t *)(*pp_adapter_deebot9);
+        if (adp[OFF_BUMP_FLAG] != 0) return 0;
+    }
+    int n_pts = *(const int32_t *)(lds + OFF_LDS_COUNT);
+    if (n_pts < 20 || n_pts > VFH_MAX_PTS) return 0;
+
+    for (int i = 0; i < n_pts; i++) {
+        const uint8_t *pt = lds + OFF_LDS_BASE + i * OFF_LDS_STRIDE;
+        float dist = *(const float *)(pt + OFF_LDS_DIST);
+        if (!isfinite(dist) || dist < VFH_TRIGGER_MIN_MM || dist > min_runway_mm) continue;
+        float px = *(const float *)(pt + OFF_LDS_PX);
+        float py = *(const float *)(pt + OFF_LDS_PY);
+        if (!isfinite(px) || !isfinite(py)) continue;
+        if (px >= VFH_TRIGGER_MIN_MM && px <= min_runway_mm && fabsf(py) <= half_width_mm) {
+            return 0;
+        }
+    }
     return 1;
 }
 
@@ -503,18 +553,21 @@ static int apply_vfh_plus(float *io_left, float *io_right, uint64_t now) {
         *io_left  *= scale;
         *io_right *= scale;
     } else if (best_offset != 0) {
-        /* Smooth differential steering toward open valley (+offset = left = +Y -> right wheel faster) */
+        /* Smooth non-reversing differential steer toward open valley (+offset = left = +Y -> right faster) */
         float steer_frac = (float)best_offset / (float)VFH_MAX_STEER_SEC; /* [-1.0, +1.0] */
-        float fwd = base_spd * (1.0f - 0.45f * prox - 0.25f * fabsf(steer_frac));
-        if (fwd < 3.0f) fwd = 3.0f;
-        float diff = base_spd * 0.65f * steer_frac * (0.4f + 0.6f * prox);
+        float fwd = base_spd * (1.0f - 0.35f * prox - 0.15f * fabsf(steer_frac));
+        if (fwd < 3.5f) fwd = 3.5f;
+        float diff = base_spd * 0.38f * steer_frac * (0.35f + 0.65f * prox);
+        if (fabsf(diff) > fwd - 2.0f) {
+            diff = (diff >= 0.0f) ? (fwd - 2.0f) : -(fwd - 2.0f);
+        }
 
         *io_left  = fwd - diff;
         *io_right = fwd + diff;
 
         if (g_last_vfh_log_ms == 0 || (now - g_last_vfh_log_ms) >= 3000) {
             g_last_vfh_log_ms = now;
-            log_msg("[NAV-BOOST] VFH+ steer: front=%.0fmm hits=%d valley=%+d deg -> L=%.1f R=%.1f\n",
+            log_msg("[NAV-BOOST] VFH+ transit steer: front=%.0fmm hits=%d valley=%+d deg -> L=%.1f R=%.1f\n",
                     closest_front_mm, danger_hits, best_offset * 5, *io_left, *io_right);
         }
     }
@@ -677,9 +730,36 @@ void adjustSpeed(float left, float right) {
             g_curr_stall_ms = 0;
         }
 
-        /* VFH+ Lidar dynamic obstacle steering during normal forward travel */
-        if (!docking_active && !bump_stuck_active && left > 2.0f && right > 2.0f) {
-            apply_vfh_plus(&out_l, &out_r, t);
+        /* VFH+ Lidar dynamic obstacle steering ONLY during point-to-point A* transit
+         * (mc_motion_followPoint), matching Ozmo 950 libDeebot architecture so room zig-zag
+         * passes and wall-following reach baseboards and turn cleanly without interference. */
+        int vfh_steered = 0;
+        if (g_follow_point_depth > 0 && !docking_active && !bump_stuck_active &&
+            left > 3.0f && right > 3.0f && fabsf(left - right) <= 8.0f) {
+            vfh_steered = apply_vfh_plus(&out_l, &out_r, t);
+        }
+
+        /* Open-floor non-cleaning transit speed boost (Pin & Go or Return-to-Dock A*) */
+        if (g_follow_point_depth > 0 && !docking_active && !bump_stuck_active && !vfh_steered &&
+            out_l >= TRANSIT_MIN_CRUISE_SPD && out_r >= TRANSIT_MIN_CRUISE_SPD &&
+            fabsf(out_l - out_r) <= TRANSIT_MAX_DIFF_SPD) {
+            if (g_silent_check_ms == 0 || (t - g_silent_check_ms) >= 1000) {
+                g_silent_check_ms = t;
+                g_silent_goto_cached = (access(SILENT_GOTO_FILE, F_OK) == 0);
+            }
+            if ((g_silent_goto_cached || g_return_transit_until_ms > t) &&
+                is_lidar_runway_clear(TRANSIT_RUNWAY_MM, TRANSIT_CORRIDOR_Y_MM)) {
+                float orig_avg = 0.5f * (out_l + out_r);
+                out_l *= TRANSIT_BOOST_FACTOR;
+                out_r *= TRANSIT_BOOST_FACTOR;
+                if (out_l > TRANSIT_MAX_SPD_CAP) out_l = TRANSIT_MAX_SPD_CAP;
+                if (out_r > TRANSIT_MAX_SPD_CAP) out_r = TRANSIT_MAX_SPD_CAP;
+                if (g_last_boost_log_ms == 0 || (t - g_last_boost_log_ms) >= 5000) {
+                    g_last_boost_log_ms = t;
+                    log_msg("[NAV-BOOST] Transit runway clear (>%.1fm): cruise %.1f -> %.1f\n",
+                            TRANSIT_RUNWAY_MM * 0.001f, orig_avg, 0.5f * (out_l + out_r));
+                }
+            }
         }
 
         /* Asymmetric slew-rate limiter (fast decel, smooth accel) */
@@ -717,8 +797,8 @@ void dwb_bumpUpdateInGridMapAndReduced(float x, float y, float theta) {
         real_dwb_bumpUpdate(x, y, theta);
     }
 
-    int gx = real_x2idx02 ? real_x2idx02(x) : (int)(x * 10.0f + 200.0f);
-    int gy = real_y2idx02 ? real_y2idx02(y) : (int)(y * 10.0f + 200.0f);
+    int gx = -1, gy = -1;
+    mm_to_grid400(x, y, &gx, &gy);
     if (gx < 0 || gx >= 400 || gy < 0 || gy >= 400) return;
 
     uint64_t t = now_ms();
@@ -918,8 +998,39 @@ int map_isUnnecessaryRangeDefinedFlag(void) {
 }
 
 /*
- * 6. Return-to-dock state tracker (disables VFH+ during final IR dock alignment)
+ * 6. Point-to-point waypoint follower & Return-to-dock state trackers
  */
+uint32_t mc_motion_followPoint(void) {
+    ensure_symbols();
+    if (!real_mc_motion_followPoint) return 2;
+    if (!is_medusa_process()) return real_mc_motion_followPoint();
+
+    g_follow_point_depth++;
+    uint32_t ret = real_mc_motion_followPoint();
+    g_follow_point_depth--;
+    return ret;
+}
+
+int erg_isChargerFrontPoseSet(void) {
+    ensure_symbols();
+    if (!real_isChargerFrontPoseSet) {
+        void *h_task_erg = dlopen(ERGODIC_PLUGIN, RTLD_NOLOAD | RTLD_NOW);
+        if (h_task_erg) {
+            real_isChargerFrontPoseSet = (alert_bool_fn)dlsym(h_task_erg, "erg_isChargerFrontPoseSet");
+        }
+    }
+    int res = real_isChargerFrontPoseSet ? real_isChargerFrontPoseSet() : 0;
+    if (res && is_medusa_process()) {
+        void *ret_addr = __builtin_return_address(0);
+        Dl_info dli;
+        if (ret_addr && dladdr(ret_addr, &dli) && dli.dli_sname &&
+            strcmp(dli.dli_sname, "erg_gotoOriginalLocationInit") == 0) {
+            g_return_transit_until_ms = now_ms() + 60000;
+        }
+    }
+    return res;
+}
+
 int startReturnToCharger(void) {
     ensure_symbols();
     if (!real_startReturnToCharger) {
@@ -929,6 +1040,7 @@ int startReturnToCharger(void) {
         }
     }
     if (is_medusa_process()) {
+        g_return_transit_until_ms = 0;
         g_dock_active_until_ms = now_ms() + 15000;
         log_msg("[NAV-BOOST] startReturnToCharger invoked (VFH+ paused for dock approach)\n");
     }
@@ -945,6 +1057,7 @@ uint8_t searchdock(void) {
     }
     if (is_medusa_process()) {
         uint64_t t = now_ms();
+        g_return_transit_until_ms = 0;
         g_dock_active_until_ms = t + 3000;
         if (g_last_dock_log_ms == 0 || (t - g_last_dock_log_ms) >= 10000) {
             g_last_dock_log_ms = t;

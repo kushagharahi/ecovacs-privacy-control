@@ -594,6 +594,16 @@ func (b *Bridge) subscribeTopics(c mqtt.Client, subPrefix, publishPrefix string)
 		b.callAPI(fmt.Sprintf("/setWater?level=%d", flowVal))
 	})
 
+	c.Subscribe(fmt.Sprintf("%s/set_suction_power", subPrefix), 0, func(_ mqtt.Client, m mqtt.Message) {
+		mode := strings.TrimSpace(string(m.Payload()))
+		switch mode {
+		case "Quiet", "Standard", "Max":
+			log.Printf("[CMD] Set suction power: %s", mode)
+			b.callAPI("/suction?mode=" + strings.ToLower(mode))
+			c.Publish(fmt.Sprintf("%s/suction_power", publishPrefix), 0, true, mode)
+		}
+	})
+
 	c.Subscribe(fmt.Sprintf("%s/play_sound", subPrefix), 0, func(_ mqtt.Client, m mqtt.Message) {
 		val := string(m.Payload())
 		parts := strings.Split(val, ":")
@@ -724,6 +734,12 @@ func (b *Bridge) startTelemetryLoop(ctx context.Context, c mqtt.Client, topicPre
 			flowName = name
 		}
 		c.Publish(fmt.Sprintf("%s/water_flow", topicPrefix), 0, true, flowName)
+
+		suctionMode := status.SuctionPower
+		if suctionMode != "Quiet" && suctionMode != "Max" {
+			suctionMode = "Standard"
+		}
+		c.Publish(fmt.Sprintf("%s/suction_power", topicPrefix), 0, true, suctionMode)
 
 		c.Publish(fmt.Sprintf("%s/carpet_boost", topicPrefix), 0, true, cbStr(status.CarpetBoost))
 		c.Publish(fmt.Sprintf("%s/continuous_clean", topicPrefix), 0, true, cbStr(status.ContinuousClean))

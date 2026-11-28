@@ -10,8 +10,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -19,9 +21,10 @@ import (
 )
 
 var (
-	silentGotoFilePath = "/tmp/silent_goto"
-	gotoTargetFilePath = "/tmp/goto_target"
-	gotoStopFilePath   = "/tmp/goto_stop"
+	silentGotoFilePath  = "/tmp/silent_goto"
+	gotoTargetFilePath  = "/tmp/goto_target"
+	gotoStopFilePath    = "/tmp/goto_stop"
+	suctionModeFilePath = "/data/config/suction_mode"
 )
 
 func setupApi(ctx context.Context, apiPort string) error {
@@ -53,6 +56,7 @@ func setupApi(ctx context.Context, apiPort string) error {
 	r.HandleFunc("/virtualRestrictions", handleVirtualRestrictions).Methods("GET", "POST")
 	r.HandleFunc("/rooms/rename", handleRenameRooms).Methods("POST")
 	r.HandleFunc("/silentGoto", handleSilentGoto).Methods("POST", "GET")
+	r.HandleFunc("/suction", handleSuction).Methods("POST", "GET")
 	r.HandleFunc("/goTo", handleGoTo).Methods("POST", "GET")
 	r.HandleFunc("/recoverMap", handleRecoverMap).Methods("POST", "GET")
 
@@ -358,6 +362,7 @@ func getStatus(res http.ResponseWriter, req *http.Request) {
 		WaterLevel:           waterLevel,
 		WaterBoxInstalled:    waterBoxInstalled,
 		CarpetBoost:          carpetBoost,
+		SuctionPower:         getCurrentSuctionPower(),
 		ContinuousClean:      continuousClean,
 		VoiceReports:         voiceReports,
 		DNDEnabled:           dndEnabled,
@@ -657,6 +662,80 @@ func setSilentGotoLocal(enable bool) error {
 		return err
 	}
 	return nil
+}
+
+var (
+	suctionPowerMu     sync.RWMutex
+	cachedSuctionPower = "Standard"
+)
+
+func normalizeSuctionPower(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "quiet", "eco", "silent":
+		return "Quiet"
+	case "max", "turbo", "strong", "max+":
+		return "Max"
+	default:
+		return "Standard"
+	}
+}
+
+func getCurrentSuctionPower() string {
+	if data, err := os.ReadFile(suctionModeFilePath); err == nil && len(data) > 0 {
+		mode := normalizeSuctionPower(string(data))
+		suctionPowerMu.Lock()
+		cachedSuctionPower = mode
+		suctionPowerMu.Unlock()
+		return mode
+	}
+	suctionPowerMu.RLock()
+	defer suctionPowerMu.RUnlock()
+	return cachedSuctionPower
+}
+
+func handleSuction(res http.ResponseWriter, req *http.Request) {
+	if req.Method == "GET" && req.URL.Query().Get("mode") == "" {
+		res.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(res).Encode(map[string]string{
+			"status":        "success",
+			"suction_power": getCurrentSuctionPower(),
+		})
+		return
+	}
+
+	mode := normalizeSuctionPower(req.URL.Query().Get("mode"))
+	fileVal := strings.ToLower(mode) + "\n"
+
+	robotIP := resolveRobotIP()
+	if isLocalRobotMode(robotIP) {
+		if err := os.MkdirAll(filepath.Dir(suctionModeFilePath), 0755); err != nil {
+			http.Error(res, fmt.Sprintf(`{"status":"error","message":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+		if err := os.WriteFile(suctionModeFilePath, []byte(fileVal), 0644); err != nil {
+			http.Error(res, fmt.Sprintf(`{"status":"error","message":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+	} else if robotIP != "" {
+		cmd := fmt.Sprintf("mkdir -p /data/config && printf '%s\\n' > /data/config/suction_mode", strings.ToLower(mode))
+		if err := runRobotTelnetCmd(robotIP, cmd); err != nil {
+			log.Printf("[SUCTION] Telnet error to %s: %v", robotIP, err)
+			http.Error(res, fmt.Sprintf(`{"status":"error","message":"%v"}`, err), http.StatusInternalServerError)
+			return
+		}
+	}
+
+	suctionPowerMu.Lock()
+	cachedSuctionPower = mode
+	suctionPowerMu.Unlock()
+	log.Printf("[SUCTION] Set hardware suction mode to %s", mode)
+
+	res.Header().Set("Content-Type", "application/json")
+	res.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(res).Encode(map[string]string{
+		"status":        "success",
+		"suction_power": mode,
+	})
 }
 
 func handleSilentGoto(res http.ResponseWriter, req *http.Request) {

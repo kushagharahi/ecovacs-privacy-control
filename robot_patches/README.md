@@ -39,7 +39,7 @@ Instead, our patching architecture leverages dynamic `LD_PRELOAD` injection:
 - **Interception Mechanism**:
   - Activated dynamically when `/tmp/silent_goto` exists on the robot filesystem (created during Go-To navigation by the HA bridge).
   - Intercepts `MDSMotorControl`: Forces motor mode to `2` (Idle / 0 RPM) during transit.
-  - Intercepts `MdsMmiMotorElemCastMotorSetMmiMsg`: Zeroes out suction, main brush, and side brush speed targets in peripheral hardware packets.
+  - Intercepts `MdsMmiMotorElemCastMotorSetMmiMsg`: Zeroes out suction, main brush, and side brush speed targets during silent transit; during normal cleaning, applies `/data/config/suction_mode` (`quiet` = `7,500 RPM` + `8.5V` brush, `standard` = `11,000 RPM` + `10.0V` brush, `max` = `15,000 RPM` + `11.5V` brush even on hard floors, with live 1-second mid-clean updates via `MDSElemCastMsg`).
   - Silences transit voice announcements (`0x0e, 0x13, 0x14, 0x15, 0x16, 0x18, 0x1b, 0x1d, 0x25, 0x26, 0x28, 0x2d` on `MdsPlayAudio` / `PLAYER cmd == 1`) without modifying stock audio files.
 - **Runtime Log**: `/tmp/silent_goto.log`
 
@@ -53,8 +53,8 @@ Instead, our patching architecture leverages dynamic `LD_PRELOAD` injection:
 - **Interception Mechanism**:
   - Intercepts `findpathInt400` and `ast_astarInt400WitCoef` (alongside bounded `astar_exe_G2G_NextRoom02`) via `LD_PRELOAD`.
   - Runs single-pass soft-inflated 8-dir A* on the `400x400` (`100mm/cell`) grid with `MAX_ASTAR_POPS = 120000`, `coef <= 0.6f` tight-clearance scoping, and `MAX_RAW_ASTAR_NODES = 999` / `MAX_WAYPOINTS = 50` caps.
-  - Applies clearance-aware supercover Bresenham **Line-of-Sight (LOS) string-pulling** (`smooth_path_los`) to collapse 45°/90° staircases into straight any-angle paths while guaranteeing safe wall clearance (`>= 200mm` normal, `>= 100mm` tight transit).
-  - Performs spiral nearest-free snapping for wedged start cells and blocked `G2G`/`witCoef` goals (while keeping upfront fast-fail for unreachable zig-zag sweep probes).
+  - Applies clearance-aware supercover Bresenham **Line-of-Sight (LOS) string-pulling** (`smooth_path_los`) followed by `100mm` linear chord subdivision (`subdivide_los_segments`), eliminating 45°/90° stair-stepping while preserving `>= 7` path samples for `FUN_000257e0` (`0x257e0`) and accurate cell-distance node counts for room-visit ordering (`FUN_0003ef84`).
+  - Performs spiral nearest-free snapping for wedged start/goal cells during cross-room `G2G`/`witCoef` transits while keeping strict room-mask boundaries and upfront fast-fail for intra-room zig-zag probes.
   - Exports `nav_record_stuck_cell()` to maintain a decaying 10-minute spatial stuck heat-map (`+heat * 60` A* step penalty) fed by `libnavboost`.
 - **Runtime Log**: `/tmp/direct_path.log`
 
@@ -75,11 +75,12 @@ Instead, our patching architecture leverages dynamic `LD_PRELOAD` injection:
 - **Problem Solved**:
   - Factory Ozmo 930 relies almost exclusively on physical bumper impacts for unmapped dynamic obstacles (shoes, chair legs), commands instantaneous wheel speed jumps that cause wheel slip / odometry drift, spins endlessly in one direction on jammed bumpers, and lacks high-centering (zero-displacement) stall recovery when the bumper is not pressed.
 - **Interception Mechanism**:
-  - **VFH+ 72-Sector Polar Histogram Steering (`adjustSpeed` hook)**: Reads live 360° Lidar points from `pRobotLdsPic` (`+0x2be8` count, `+0xa28` array) and, when `>= 3` confirming rays enter the forward danger corridor (`155–460mm` ahead, `|y| <= 205mm`), builds a robot-radius-inflated (`222mm`) 72-sector polar histogram to smoothly steer around obstacles before impact (automatically paused during dock IR alignment).
+  - **VFH+ 72-Sector Polar Histogram Transit Steering (`mc_motion_followPoint` + `adjustSpeed` hooks)**: Active strictly during point-to-point A* transit (`mc_motion_followPoint`, matching Ozmo 950 `libDeebot` architecture so room zig-zag passes and wall-following reach baseboards without interference). Reads live 360° Lidar points from `pRobotLdsPic` (`+0x2be8` count, `+0xa28` array) and, when `>= 3` confirming rays enter the chassis-width transit corridor (`155–330mm` ahead, `|y| <= 172mm`), uses a doorway-safe (`185mm` radius) 72-sector polar histogram to gently steer around dynamic obstacles while keeping `70cm` room doorways open.
   - **Zero-Displacement Pose-Stall, Wheel-Current & Lidar Widest-Gap Escape**: Monitors `pAdapterDeebot_9` pose (`+0x2c08/+0x2c0c`), `_alert_isWheelLargeCurrent`, and `_alert_isSmallWheelStoped`; if commanded forward `> 2.5s` with `< 30mm` movement or sustained current/caster stall `> 1.2s`, scans `pRobotLdsPic` across all 72 sectors to find the widest open exit gap (`>= 520mm` clearance, `>= 20°` wide), reverses `240ms` to clear contact, pivots smoothly toward the widest exit gap, and reports the location to `libdirectpath`'s stuck heat-map.
   - **Smooth Acceleration Slew-Rate Limiter**: Caps forward/turn wheel speed jumps (`4.5` units / 20ms tick) while passing immediate stops `(0, 0)` and reverse commands straight through with zero lag.
   - **Bump-Cluster Heat-Map & Anti-Deadlock Pulse (`dwb_bumpUpdateInGridMapAndReduced`, `dtp_DeTrapInit`, `bumpStuckCheckAndHandle`)**: Feeds repeated bump clusters (`>= 3` bumps within `300mm` in `15s`) and detrap entries to `libdirectpath`, and pulses a `240ms` reverse nudge if a jammed bumper spins `> 1.6s`.
   - **Cold-Boot Return-to-Dock A* Costmap Hydration (`map_isUnnecessaryRangeDefinedFlag` hook)**: Fixes a factory bug in `erg_gotoOriginalLocationInit` (`0x3962c`) where sending Return-to-Dock after a reboot/`medusa` restart (before any clean runs) saw `DAT_00ece548 == 0`, skipped A* transit completely, and fell into blind IR `searchdock()`. Hydrates the `800x800` and `400x400` A* costmaps (plus virtual walls) directly from the loaded SLAM map so the robot A*-paths home.
+  - **Open-Floor Non-Cleaning Transit Boost (`erg_isChargerFrontPoseSet` + `/tmp/silent_goto`)**: During Pin & Go silent transit or Return-to-Dock A* transit, boosts straightaway cruise speed by `+22%` (capped at `32.5` cm/s) whenever live Lidar (`pRobotLdsPic`) confirms `>= 1.1m` clear ahead, automatically dropping back to normal speed near turns, obstacles, or IR dock alignment.
 - **Runtime Log**: `/tmp/nav_boost.log`
 
 ### F. `libfastreloc` (Enhanced Branch-and-Bound Global Relocation)

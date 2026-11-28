@@ -123,6 +123,7 @@ typedef struct {
     uint32_t *clr_gen;
     HeapNode *heap;
     int32_t  *tmp_path;
+    int32_t  *los_verts;
     uint32_t  cur_gen;
     uint32_t  cur_clr_gen;
     int       heap_size;
@@ -226,9 +227,10 @@ static int ensure_workspace(void) {
     g_ws.clr_gen   = (uint32_t *)calloc(GRID_CELLS, sizeof(uint32_t));
     g_ws.heap      = (HeapNode *)malloc(GRID_CELLS * sizeof(HeapNode));
     g_ws.tmp_path  = (int32_t  *)malloc(GRID_CELLS * sizeof(int32_t));
+    g_ws.los_verts = (int32_t  *)malloc(GRID_CELLS * sizeof(int32_t));
 
     if (!g_ws.g_cost || !g_ws.parent || !g_ws.heap_pos || !g_ws.seen_gen ||
-        !g_ws.clr_cache || !g_ws.clr_gen || !g_ws.heap || !g_ws.tmp_path) {
+        !g_ws.clr_cache || !g_ws.clr_gen || !g_ws.heap || !g_ws.tmp_path || !g_ws.los_verts) {
         free(g_ws.g_cost);    g_ws.g_cost = NULL;
         free(g_ws.parent);    g_ws.parent = NULL;
         free(g_ws.heap_pos);  g_ws.heap_pos = NULL;
@@ -237,6 +239,7 @@ static int ensure_workspace(void) {
         free(g_ws.clr_gen);   g_ws.clr_gen = NULL;
         free(g_ws.heap);      g_ws.heap = NULL;
         free(g_ws.tmp_path);  g_ws.tmp_path = NULL;
+        free(g_ws.los_verts); g_ws.los_verts = NULL;
         return 0;
     }
     g_ws.cur_gen = 0;
@@ -443,31 +446,97 @@ static int line_has_clearance(const int32_t *map, int x0, int y0, int x1, int y1
  * librobot_jps_cxx smooth_path + Theta*): collapses choppy 45/90-deg grid staircases
  * into clean any-angle straight lines while guaranteeing safe wall clearance.
  */
-static int smooth_path_los(const int32_t *map, int32_t *path, int len, uint8_t min_clr) {
-    if (len <= 2) return len;
+static int smooth_path_los(const int32_t *map, const int32_t *in_path, int len,
+                           int32_t *out_verts, uint8_t min_clr) {
+    if (len <= 2) {
+        for (int i = 0; i < len; i++) out_verts[i] = in_path[i];
+        return len;
+    }
 
     int write = 0;
     int anchor = 0;
-    path[write++] = path[0];
+    out_verts[write++] = in_path[0];
 
     while (anchor < len - 1) {
-        int ax = path[anchor] / GRID_H;
-        int ay = path[anchor] % GRID_H;
+        int ax = in_path[anchor] / GRID_H;
+        int ay = in_path[anchor] % GRID_H;
         int next = anchor + 1;
 
         for (int j = len - 1; j > anchor + 1; j--) {
-            int bx = path[j] / GRID_H;
-            int by = path[j] % GRID_H;
+            int bx = in_path[j] / GRID_H;
+            int by = in_path[j] % GRID_H;
             if (line_has_clearance(map, ax, ay, bx, by, min_clr)) {
                 next = j;
                 break;
             }
         }
 
-        path[write++] = path[next];
+        out_verts[write++] = in_path[next];
         anchor = next;
     }
 
+    return write;
+}
+
+/*
+ * Subdivide LOS-smoothed straight segments back into ~100mm grid steps.
+ *
+ * Why this is critical for Ozmo 930 firmware compatibility:
+ *   1. Stock FUN_000257e0 (0x257e0 in plug_medusa_plugin_task_ergodic.so) has a hard
+ *      shortcut `if (end - start < 6) ast_astarPathNodeCount = 1;`, assuming dense 1-cell
+ *      A* paths. Returning sparse corner-only vertices (<= 6 nodes) caused setAstartWalkPoint02
+ *      to discard ALL intermediate doorway/hallway corners and aim straight through walls!
+ *   2. Room-ordering helpers (e.g. FUN_0003ef84) use ast_astarInt400's returned node count
+ *      as the path travel distance in 100mm cells.
+ * Subdividing each LOS chord into 1-cell linear samples preserves exact any-angle straight
+ * segments (<= 50mm grid quantization < 150mm DP threshold in FUN_000258dc), preserves true
+ * path-distance node counts, and guarantees >= 7 samples whenever any obstacle corner exists.
+ */
+static int subdivide_los_segments(const int32_t *verts, int vlen, int32_t *out_path, int max_out) {
+    if (vlen <= 0 || max_out <= 0) return 0;
+    if (vlen == 1) {
+        out_path[0] = verts[0];
+        return 1;
+    }
+
+    /* Compute total Chebyshev steps across all LOS segments */
+    int total_steps = 0;
+    for (int k = 0; k < vlen - 1; k++) {
+        int x0 = verts[k] / GRID_H,     y0 = verts[k] % GRID_H;
+        int x1 = verts[k + 1] / GRID_H, y1 = verts[k + 1] % GRID_H;
+        int dx = abs(x1 - x0), dy = abs(y1 - y0);
+        int seg = (dx > dy) ? dx : dy;
+        if (seg < 1) seg = 1;
+        total_steps += seg;
+    }
+
+    /* If >= 1 real obstacle corner exists (vlen >= 3), ensure total_steps >= 6
+     * (i.e. >= 7 path samples) so FUN_000257e0 never hits `param_2 - param_1 < 6`. */
+    int min_seg_steps = (vlen >= 3 && total_steps < 6) ? (6 / (vlen - 1) + 1) : 1;
+
+    int write = 0;
+    out_path[write++] = verts[0];
+
+    for (int k = 0; k < vlen - 1 && write < max_out; k++) {
+        int x0 = verts[k] / GRID_H,     y0 = verts[k] % GRID_H;
+        int x1 = verts[k + 1] / GRID_H, y1 = verts[k + 1] % GRID_H;
+        int dx = x1 - x0, dy = y1 - y0;
+        int adx = abs(dx), ady = abs(dy);
+        int steps = (adx > ady) ? adx : ady;
+        if (steps < min_seg_steps) steps = min_seg_steps;
+
+        for (int s = 1; s <= steps && write < max_out; s++) {
+            int x = x0 + (dx * s + ((dx >= 0) ? (steps / 2) : -(steps / 2))) / steps;
+            int y = y0 + (dy * s + ((dy >= 0) ? (steps / 2) : -(steps / 2))) / steps;
+            int32_t idx = x * GRID_H + y;
+            /* Always emit exact corner endpoint; avoid duplicate interior cells unless needed for min_seg_steps */
+            if (s == steps || idx != out_path[write - 1] || min_seg_steps > 1) {
+                out_path[write++] = idx;
+            }
+        }
+    }
+
+    out_path[write - 1] = verts[vlen - 1];
     return write;
 }
 
@@ -688,10 +757,10 @@ int findpathInt400(int width, int height,
         return 0;
     }
 
-    /* Upfront goal check avoids full-map flood on unreachable/obstacle goals during zig-zag planning.
+    /* Upfront start/goal check avoids full-map flood on unreachable/room-masked cells.
      * During cross-room G2G or witCoef (return-to-dock / reloc / bump recovery), allow small spiral snap. */
     int allow_goal_snap = (g_witcoef_depth > 0 || g_g2g_depth > 0);
-    if (!allow_goal_snap && !cell_is_free(map, gx, gy)) {
+    if (!allow_goal_snap && (!cell_is_free(map, sx, sy) || !cell_is_free(map, gx, gy))) {
         *out_count = 0;
         return 0;
     }
@@ -715,8 +784,8 @@ int findpathInt400(int width, int height,
 
     snapshot_heat_zones();
 
-    /* Snap wedged start cell (or G2G/return goal cell) to nearest free cell */
-    if (!cell_is_free(map, sx, sy)) {
+    /* Snap wedged start/goal cell to nearest free cell only in cross-room G2G or witCoef context */
+    if (allow_goal_snap && !cell_is_free(map, sx, sy)) {
         if (!snap_to_nearest_free(map, &sx, &sy, 3)) {
             *out_count = 0;
             pthread_mutex_unlock(&g_astar_mutex);
@@ -750,15 +819,21 @@ int findpathInt400(int width, int height,
         g_ws.tmp_path[len++] = cur;
     }
 
-    /* Clearance-aware any-angle LOS string-pulling (eliminates 45/90-deg stair-stepping) */
+    /* Clearance-aware any-angle LOS string-pulling + 100mm segment subdivision
+     * (eliminates 45/90-deg stair-stepping while preserving >=6 samples for FUN_000257e0
+     * and accurate cell-distance counts for room ordering). */
     if (len > 2) {
         uint8_t min_clr = (p1 <= COEF_LOW_PEN_1) ? 1 : 2;
-        len = smooth_path_los(map, g_ws.tmp_path, len, min_clr);
+        int vlen = smooth_path_los(map, g_ws.tmp_path, len, g_ws.los_verts, min_clr);
+        len = subdivide_los_segments(g_ws.los_verts, vlen, g_ws.tmp_path, GRID_CELLS);
     }
 
-    /* Compress colinear segments if path still exceeds stock aiStack_fcc[1000] limit */
+    /* Downsample if path exceeds stock aiStack_fcc[1000] limit (never below 7 samples) */
     if (len > MAX_RAW_ASTAR_NODES) {
-        len = compress_colinear_path(g_ws.tmp_path, len);
+        int compressed = compress_colinear_path(g_ws.tmp_path, len);
+        if (compressed >= 7) {
+            len = compressed;
+        }
     }
 
     int out_len = (len <= MAX_RAW_ASTAR_NODES) ? len : MAX_RAW_ASTAR_NODES;
